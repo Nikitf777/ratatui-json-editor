@@ -12,8 +12,8 @@
 //!   rendered with `ratatui-textarea` and syntax highlighted with the
 //!   library's span helpers (always visible: it mirrors the selected node's
 //!   JSON text and becomes the edit buffer in edit mode),
-//! * a scrollbar, driven by the state's viewport accessors with
-//!   `ScrollMode::Manual`.
+//! * a `tui-scrollbar` scrollbar (fractional thumb), driven by the state's
+//!   viewport accessors with `ScrollMode::Manual`.
 //!
 //! Without an argument the demo starts from a small sample document; with one
 //! it loads the given file. On exit the (always valid) JSON is printed to
@@ -44,13 +44,14 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use ratatui_json_editor::{
     clip_spans, highlight_json, overlay, runs_to_spans, styled_runs, EditedEntry, EditError,
     JsonEditor, JsonEditorState, Run, ScrollMode, Theme,
 };
 use ratatui_textarea::{DataCursor, Input, Key, TextArea};
+use tui_scrollbar::{GlyphSet, ScrollBar, ScrollBarArrows, ScrollLengths};
 
 const SAMPLE: &str = r#"{
   "name": "ratatui-json-editor",
@@ -363,14 +364,14 @@ fn render_editor(frame: &mut Frame, app: &mut App, area: Rect) {
         .scroll_mode(ScrollMode::Manual);
     frame.render_stateful_widget(&widget, tree_area, &mut app.state);
 
-    let mut scrollbar_state = ScrollbarState::new(app.state.line_count())
-        .position(app.state.scroll())
-        .viewport_content_length(tree_area.height as usize);
-    frame.render_stateful_widget(
-        Scrollbar::new(ScrollbarOrientation::VerticalRight),
-        bar_area,
-        &mut scrollbar_state,
-    );
+    let scrollbar = ScrollBar::vertical(ScrollLengths {
+        content_len: app.state.line_count(),
+        viewport_len: tree_area.height as usize,
+    })
+    .offset(app.state.scroll())
+    .arrows(ScrollBarArrows::Both)
+    .glyph_set(GlyphSet::box_drawing());
+    frame.render_widget(&scrollbar, bar_area);
 }
 
 fn render_output(app: &App, area: Rect, frame: &mut Frame) {

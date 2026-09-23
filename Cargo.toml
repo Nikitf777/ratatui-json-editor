@@ -12,6 +12,7 @@ unicode-width = "0.2"
 [dev-dependencies]
 ratatui = "0.30"
 ratatui-textarea = "0.9"
+tui-scrollbar = "0.2"
 
 [[example]]
 name = "demo"
