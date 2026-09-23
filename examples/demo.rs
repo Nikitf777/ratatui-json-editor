@@ -8,8 +8,10 @@
 //! `JsonEditor` tree widget. Everything else lives right here in this file:
 //!
 //! * two modes (normal / edit) and their keymap,
-//! * the text input, rendered with `ratatui-textarea` in a popup and syntax
-//!   highlighted with the library's span helpers,
+//! * the text input, a framed full-width box (one text row) above both panels,
+//!   rendered with `ratatui-textarea` and syntax highlighted with the
+//!   library's span helpers (always visible: it mirrors the selected node's
+//!   JSON text and becomes the edit buffer in edit mode),
 //! * a scrollbar, driven by the state's viewport accessors with
 //!   `ScrollMode::Manual`.
 //!
@@ -42,7 +44,7 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::{DefaultTerminal, Frame};
 use ratatui_json_editor::{
     clip_spans, highlight_json, overlay, runs_to_spans, styled_runs, EditedEntry, EditError,
@@ -331,7 +333,8 @@ impl App {
 // -- rendering --------------------------------------------------------------
 
 fn draw(frame: &mut Frame, app: &mut App) {
-    let [main, status, help] = Layout::vertical([
+    let [input, main, status, help] = Layout::vertical([
+        Constraint::Length(3),
         Constraint::Min(5),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -340,6 +343,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
     let [editor_area, output_area] =
         Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(main);
 
+    render_input_line(frame, app, input);
     render_editor(frame, app, editor_area);
     render_output(app, output_area, frame);
     render_status(app, status, frame);
@@ -367,10 +371,6 @@ fn render_editor(frame: &mut Frame, app: &mut App, area: Rect) {
         bar_area,
         &mut scrollbar_state,
     );
-
-    if matches!(app.mode, Mode::Edit(_)) {
-        render_edit_popup(frame, app, inner);
-    }
 }
 
 fn render_output(app: &App, area: Rect, frame: &mut Frame) {
@@ -379,32 +379,33 @@ fn render_output(app: &App, area: Rect, frame: &mut Frame) {
     frame.render_widget(Paragraph::new(text).block(block), area);
 }
 
-fn render_edit_popup(frame: &mut Frame, app: &mut App, area: Rect) {
-    let Mode::Edit(form) = &app.mode else { return };
-    let title = match form.field {
-        Field::Value => " Edit value as JSON text ",
-        Field::Key => " Edit key as plain text ",
+/// The text input: a framed full-width box above both panels, one text row
+/// tall. It is always visible so the layout never shifts — while editing it
+/// shows the live `ratatui-textarea` buffer, otherwise it mirrors the selected
+/// node's JSON text (compactly, to fit one line).
+fn render_input_line(frame: &mut Frame, app: &mut App, area: Rect) {
+    let title = match &app.mode {
+        Mode::Edit(form) => match form.field {
+            Field::Value => " Edit value as JSON text ",
+            Field::Key => " Edit key as plain text ",
+        },
+        Mode::Normal => " JSON text ",
     };
-    let width = ((area.width as usize * 3) / 4)
-        .max(16)
-        .min(area.width as usize) as u16;
-    let height = (app.textarea.lines().len() + 2)
-        .max(3)
-        .min(area.height as usize) as u16;
-    let rect = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
-
-    frame.render_widget(Clear, rect);
     let block = Block::bordered()
         .title(Line::styled(title, app.theme.popup_title))
         .border_style(app.theme.popup);
-    let inner = block.inner(rect);
-    frame.render_widget(block, rect);
-    render_input(frame, app, inner);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if matches!(app.mode, Mode::Edit(_)) {
+        render_input(frame, app, inner);
+    } else if inner.height > 0 {
+        let text = app.state.selected().to_compact_string();
+        let chars: Vec<char> = text.chars().collect();
+        let runs = styled_runs(&text, &app.theme);
+        let spans = clip_spans(runs_to_spans(&chars, &runs, TAB_LEN), 0, inner.width as usize);
+        frame.render_widget(Line::from(spans), inner);
+    }
 }
 
 /// Renders the `ratatui-textarea` buffer with syntax highlighting. The

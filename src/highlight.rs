@@ -32,9 +32,9 @@ pub struct Theme {
     pub cursor_line: Style,
     /// Background of selected text in edit mode
     pub selection: Style,
-    /// Style of the edit popup frame
+    /// Style of the frame a consumer draws around its text input
     pub popup: Style,
-    /// Style of the edit popup title
+    /// Style of the text input frame's title
     pub popup_title: Style,
 }
 

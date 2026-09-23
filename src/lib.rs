@@ -16,8 +16,8 @@
 //!
 //! Text input, modals, keymaps and scrollbars all live in the consumer. The
 //! bundled demo (`cargo run --example demo`) shows one complete composition:
-//! a normal mode and an edit mode backed by `ratatui-textarea`, a highlighted
-//! key/value popup, and a scrollbar.
+//! a normal mode and an edit mode backed by `ratatui-textarea`, a framed
+//! full-width input above the panels, and a scrollbar.
 //!
 //! ```
 //! use ratatui_json_editor::{EditedEntry, JsonEditorState};
