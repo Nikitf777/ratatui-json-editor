@@ -1,45 +1,56 @@
-//! A JSON editor widget for [ratatui] that **always produces valid JSON**.
+//! A JSON editor widget for [ratatui] that **always produces valid JSON** —
+//! and nothing else: no key handling, no text input widget, no chrome.
 //!
-//! The editor works in two modes:
+//! The crate is split into two small halves:
 //!
-//! * **Normal mode** navigates the JSON tree and applies structural operations
-//!   (add, delete, reorder, rename) that cannot break the document.
-//! * **Edit mode** types into a [`ratatui_textarea::TextArea`], giving you its
-//!   essential text operations (word motions, undo/redo, yank/paste, ...). The
-//!   typed text is committed to the document only when it parses as JSON, so
-//!   the model is never invalid.
+//! * [`JsonEditorState`] — the document, the cursor and the editing
+//!   operations. Editing is a transaction: [`JsonEditorState::edit`] hands you
+//!   the node's key/value text to put into **whatever input widget you like**,
+//!   and [`JsonEditorState::commit`] applies it only when it is valid JSON.
+//!   Structural operations (add/delete/reorder) keep the document valid by
+//!   construction.
+//! * [`JsonEditor`] — a stateless [`StatefulWidget`] that renders the state as
+//!   a syntax-highlighted JSON tree ([`Theme`]). Overflow is delegated to the
+//!   consumer through [`ScrollMode`] and the state's viewport accessors, so
+//!   things like scrollbars stay in the application.
 //!
-//! Rendering is syntax highlighted with a customizable [`Theme`].
+//! Text input, modals, keymaps and scrollbars all live in the consumer. The
+//! bundled demo (`cargo run --example demo`) shows one complete composition:
+//! a normal mode and an edit mode backed by `ratatui-textarea`, a highlighted
+//! key/value popup, and a scrollbar.
 //!
 //! ```
-//! use ratatui_json_editor::{EditTarget, Input, JsonEditor, Key, Mode, Outcome};
+//! use ratatui_json_editor::{EditedEntry, JsonEditorState};
 //!
-//! let press = |key| Input { key, ..Default::default() };
-//! let mut editor = JsonEditor::parse(r#"{"answer": 0}"#).unwrap();
+//! let mut state = JsonEditorState::parse(r#"{"answer": 0}"#).unwrap();
+//! state.cursor_down(); // select root["answer"]
 //!
-//! // Normal mode: select the first entry and edit its value.
-//! editor.handle_input(press(Key::Char('j')));
-//! editor.handle_input(press(Key::Char('e')));
-//! assert_eq!(editor.mode(), Mode::Edit(EditTarget::Value));
+//! // Hand `entry` to your input widget; here we just replace the text.
+//! let mut entry = state.edit();
+//! assert_eq!(entry.value, "0");
+//! entry.value = "\"forty two\"".to_string();
+//! assert!(state.commit(entry).is_ok());
+//! assert_eq!(state.root().to_compact_string(), r#"{"answer":"forty two"}"#);
 //!
-//! // Edit mode: replace the buffer with new JSON text and commit it.
-//! editor.handle_input(press(Key::Delete));
-//! for c in "\"forty two\"".chars() {
-//!     editor.handle_input(press(Key::Char(c)));
-//! }
-//! assert_eq!(editor.handle_input(press(Key::Enter)), Outcome::Modified);
-//! assert_eq!(editor.to_json(), r#"{"answer":"forty two"}"#);
+//! // Invalid text is rejected and never reaches the document.
+//! let bad = EditedEntry { key: None, value: "{".to_string() };
+//! assert!(state.commit(bad).is_err());
+//! assert_eq!(state.root().to_compact_string(), r#"{"answer":"forty two"}"#);
 //! ```
-//!
-//! Run the interactive demo with `cargo run --example demo`.
 //!
 //! [ratatui]: https://docs.rs/ratatui
+//! [`StatefulWidget`]: ratatui_core::widgets::StatefulWidget
 
-mod editor;
 mod highlight;
 mod json;
+mod state;
+mod tree;
+mod widget;
 
-pub use editor::{EditTarget, JsonEditor, Mode, Outcome};
-pub use highlight::{highlight_json, lex_line, styled_runs, Run, Theme, Token, TokenKind};
+pub use highlight::{
+    clip_spans, highlight_json, lex_line, overlay, runs_to_spans, styled_runs, Run, Theme, Token,
+    TokenKind,
+};
 pub use json::{quote_string, Json, Number, ParseError};
-pub use ratatui_textarea::{Input, Key};
+pub use state::{EditError, EditedEntry, JsonEditorState};
+pub use widget::{JsonEditor, ScrollMode};

@@ -5,8 +5,8 @@
 //! powers the tree view, the live output pane and the text area shown in edit
 //! mode, so colors are consistent everywhere.
 
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui_core::style::{Color, Modifier, Style};
+use ratatui_core::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 /// Colors and emphasis used to render JSON.
