@@ -33,7 +33,7 @@
 //! assert_eq!(state.root().to_compact_string(), r#"{"answer":"forty two"}"#);
 //!
 //! // Invalid text is rejected and never reaches the document.
-//! let bad = EditedEntry { key: None, value: "{".to_string() };
+//! let bad = EditedEntry { key: None, value: "oops".to_string() };
 //! assert!(state.commit(bad).is_err());
 //! assert_eq!(state.root().to_compact_string(), r#"{"answer":"forty two"}"#);
 //! ```

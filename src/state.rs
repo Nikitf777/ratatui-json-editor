@@ -77,7 +77,9 @@ pub struct EditedEntry {
     /// required for nodes that have no key: the root value and array elements).
     pub key: Option<String>,
     /// The value as JSON text, e.g. `"hello"`, `42` or `{"a": [1, 2]}`.
-    /// Empty text is treated as `null`.
+    /// Empty text is treated as `null`, and text that is only missing its
+    /// closing quote or brackets is completed: a lone `"` submits `""`, and
+    /// `[1, 2` submits `[1, 2]`.
     pub value: String,
 }
 
@@ -394,7 +396,8 @@ impl JsonEditorState {
     /// Applies an [`EditedEntry`] to the selected node.
     ///
     /// The text is validated first: the value must parse as JSON (empty text
-    /// means `null`), keys must be single-line and unique among their siblings.
+    /// means `null`; text that is only missing its closing quote or brackets
+    /// is completed), keys must be single-line and unique among their siblings.
     /// If anything is wrong, [`EditError`] is returned and the document is
     /// left untouched.
     pub fn commit(&mut self, edited: EditedEntry) -> Result<(), EditError> {
@@ -402,7 +405,13 @@ impl JsonEditorState {
         let value = if value.trim().is_empty() {
             Json::Null
         } else {
-            Json::parse(&value).map_err(EditError::InvalidJson)?
+            Json::parse(&value)
+                .or_else(|err| {
+                    missing_closers(&value)
+                        .and_then(|closers| Json::parse(&format!("{value}{closers}")).ok())
+                        .ok_or(err)
+                })
+                .map_err(EditError::InvalidJson)?
         };
 
         let path = self.cursor.clone();
@@ -568,6 +577,44 @@ fn unique_key(entries: &[(String, Json)]) -> String {
         .unwrap()
 }
 
+/// The closing characters missing from `text` when it ends inside a string or
+/// container: `"some` needs `"`, `{"a": [1` needs `]}`. `None` when nothing is
+/// missing.
+fn missing_closers(text: &str) -> Option<String> {
+    let mut closers = String::new();
+    let mut open = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    for c in text.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else {
+            match c {
+                '"' => in_string = true,
+                '[' => open.push(']'),
+                '{' => open.push('}'),
+                ']' | '}' => {
+                    open.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+    if in_string {
+        closers.push('"');
+    }
+    while let Some(closer) = open.pop() {
+        closers.push(closer);
+    }
+    (!closers.is_empty()).then_some(closers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,11 +682,52 @@ mod tests {
     fn invalid_text_never_reaches_the_document() {
         let mut state = doc(r#"{"a": 1}"#);
         state.cursor_down();
-        let err = state.commit(entry("{")).unwrap_err();
+        let err = state.commit(entry("oops")).unwrap_err();
         assert!(matches!(err, EditError::InvalidJson(_)));
         assert!(err.to_string().contains("line 1"));
         assert_eq!(state.root(), &Json::parse(r#"{"a": 1}"#).unwrap());
         assert_valid(&state);
+    }
+
+    #[test]
+    fn commit_completes_unclosed_values() {
+        let mut s = doc(r#"{"a": 1}"#);
+        s.cursor_down();
+        assert!(s.commit(entry("\"some words ")).is_ok(), "missing closing quote");
+        assert_eq!(s.root(), &Json::parse(r#"{"a": "some words "}"#).unwrap());
+
+        let mut s = doc(r#"{"a": 1}"#);
+        s.cursor_down();
+        assert!(s.commit(entry("\"")).is_ok(), "a lone quote means empty string");
+        assert_eq!(s.root(), &Json::parse(r#"{"a": ""}"#).unwrap());
+
+        let mut s = doc(r#"{"a": 1}"#);
+        s.cursor_down();
+        assert!(s.commit(entry("[1, 2")).is_ok(), "missing closing bracket");
+        assert_eq!(s.root(), &Json::parse(r#"{"a": [1, 2]}"#).unwrap());
+
+        let mut s = doc(r#"{"a": 1}"#);
+        s.cursor_down();
+        assert!(s.commit(entry("{\"x\": [9")).is_ok(), "missing several closers");
+        assert_eq!(s.root(), &Json::parse(r#"{"a": {"x": [9]}}"#).unwrap());
+
+        let mut s = doc(r#"{"a": 1}"#);
+        s.cursor_down();
+        assert!(s.commit(entry("{")).is_ok(), "a lone brace means empty object");
+        assert_eq!(s.root(), &Json::parse(r#"{"a": {}}"#).unwrap());
+        assert_valid(&s);
+
+        assert!(s.commit(entry("oops")).is_err(), "other text is still rejected");
+        assert!(s.commit(entry("[1,]")).is_err(), "real errors are still rejected");
+    }
+
+    #[test]
+    fn missing_closers_are_detected() {
+        assert_eq!(missing_closers("\"some").as_deref(), Some("\""));
+        assert_eq!(missing_closers("{\"a\": [1").as_deref(), Some("]}"));
+        assert_eq!(missing_closers("[1, 2").as_deref(), Some("]"));
+        assert_eq!(missing_closers("[1, 2]").as_deref(), None);
+        assert_eq!(missing_closers("\"ok\"").as_deref(), None);
     }
 
     #[test]
