@@ -7,12 +7,13 @@
 
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
+use ratatui_core::style::Style;
 use ratatui_core::text::{Line, Span};
 use ratatui_core::widgets::StatefulWidget;
 
 use crate::highlight::Theme;
 use crate::json::{quote_string, Json};
-use crate::state::JsonEditorState;
+use crate::state::{Field, JsonEditorState};
 use crate::tree::{flatten, Row, RowContent};
 
 /// Who scrolls the tree.
@@ -85,23 +86,29 @@ impl StatefulWidget for &JsonEditor {
         }
         let top = state.scroll().min(rows.len().saturating_sub(height));
         state.set_scroll(top);
+        let cursor_line = state.cursor_line();
 
         for (i, row) in rows.iter().skip(top).take(height).enumerate() {
             let rect = Rect::new(area.x, area.y + i as u16, area.width, 1);
-            if top + i == state.cursor_line() {
+            let is_cursor = top + i == cursor_line;
+            if is_cursor {
                 buf.set_style(rect, self.theme.cursor_line);
             }
+            let selected = is_cursor.then(|| state.selected_field());
             buf.set_line(
                 area.x,
                 rect.y,
-                &Line::from(render_row(row, &self.theme)),
+                &Line::from(render_row(row, &self.theme, selected)),
                 area.width,
             );
         }
     }
 }
 
-fn render_row(row: &Row, theme: &Theme) -> Vec<Span<'static>> {
+fn render_row(row: &Row, theme: &Theme, selected: Option<Field>) -> Vec<Span<'static>> {
+    let key_on = selected == Some(Field::Key);
+    let value_on = selected == Some(Field::Value);
+    let field = |style: Style, on: bool| if on { style.patch(theme.selection) } else { style };
     let mut spans = vec![Span::raw("  ".repeat(row.depth))];
     match &row.content {
         RowContent::Container {
@@ -110,21 +117,24 @@ fn render_row(row: &Row, theme: &Theme) -> Vec<Span<'static>> {
             empty,
         } => {
             if let Some(key) = key {
-                push_key(&mut spans, key, theme);
+                push_key(&mut spans, key, theme, key_on);
             }
             let (open, close) = if *is_object { ("{", "}") } else { ("[", "]") };
             if *empty {
-                spans.push(Span::styled(format!("{open}{close}"), theme.punct));
+                spans.push(Span::styled(
+                    format!("{open}{close}"),
+                    field(theme.punct, value_on),
+                ));
                 push_comma(&mut spans, row.comma, theme);
             } else {
-                spans.push(Span::styled(open, theme.punct));
+                spans.push(Span::styled(open, field(theme.punct, value_on)));
             }
         }
         RowContent::Scalar { key, value } => {
             if let Some(key) = key {
-                push_key(&mut spans, key, theme);
+                push_key(&mut spans, key, theme, key_on);
             }
-            spans.push(scalar_span(value, theme));
+            spans.push(scalar_span(value, theme, value_on));
             push_comma(&mut spans, row.comma, theme);
         }
         RowContent::Close { is_object } => {
@@ -138,19 +148,30 @@ fn render_row(row: &Row, theme: &Theme) -> Vec<Span<'static>> {
     spans
 }
 
-fn push_key(spans: &mut Vec<Span<'static>>, key: &str, theme: &Theme) {
-    spans.push(Span::styled(quote_string(key), theme.key));
+fn push_key(spans: &mut Vec<Span<'static>>, key: &str, theme: &Theme, selected: bool) {
+    let style = if selected {
+        theme.key.patch(theme.selection)
+    } else {
+        theme.key
+    };
+    spans.push(Span::styled(quote_string(key), style));
     spans.push(Span::styled(":", theme.punct));
     spans.push(Span::raw(" "));
 }
 
-fn scalar_span(value: &Json, theme: &Theme) -> Span<'static> {
-    match value {
-        Json::String(s) => Span::styled(quote_string(s), theme.string),
-        Json::Number(n) => Span::styled(n.to_string(), theme.number),
-        Json::Bool(b) => Span::styled(b.to_string(), theme.boolean),
-        _ => Span::styled("null", theme.null),
-    }
+fn scalar_span(value: &Json, theme: &Theme, selected: bool) -> Span<'static> {
+    let (text, style) = match value {
+        Json::String(s) => (quote_string(s), theme.string),
+        Json::Number(n) => (n.to_string(), theme.number),
+        Json::Bool(b) => (b.to_string(), theme.boolean),
+        _ => ("null".to_string(), theme.null),
+    };
+    let style = if selected {
+        style.patch(theme.selection)
+    } else {
+        style
+    };
+    Span::styled(text, style)
 }
 
 fn push_comma(spans: &mut Vec<Span<'static>>, comma: bool, theme: &Theme) {
@@ -188,6 +209,23 @@ mod tests {
         let theme = Theme::default();
         assert_eq!(buf[(2, 1)].style().fg, theme.key.fg);
         assert_eq!(buf[(8, 1)].style().fg, theme.string.fg);
+    }
+
+    #[test]
+    fn highlights_the_selected_field() {
+        let mut state = JsonEditorState::parse(r#"{"a": 1}"#).unwrap();
+        state.cursor_down();
+        let theme = Theme::default();
+
+        state.select_key();
+        let buf = render(&mut state, 30, 5);
+        assert_eq!(buf[(3, 1)].style().bg, theme.selection.bg, "key highlighted");
+        assert_ne!(buf[(7, 1)].style().bg, theme.selection.bg);
+
+        state.select_value();
+        let buf = render(&mut state, 30, 5);
+        assert_eq!(buf[(7, 1)].style().bg, theme.selection.bg, "value highlighted");
+        assert_ne!(buf[(3, 1)].style().bg, theme.selection.bg);
     }
 
     #[test]

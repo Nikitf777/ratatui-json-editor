@@ -22,10 +22,10 @@
 //! Keys in normal mode:
 //!
 //! ```text
-//! j/k or ↓/↑   move between nodes        e or Enter   edit value (JSON text)
-//! h/l or ←/→   parent / first child      r            rename key
-//! a            add entry                 d or x       delete entry
-//! J / K        reorder among siblings    PgUp/PgDn    scroll
+//! j/k or ↓/↑   select line (keeps key/value)   Enter   edit the selected key or value
+//! h/l or ←/→   select key / value field        e / r   edit value / edit key
+//! a            add entry                       d or x  delete entry
+//! J / K        reorder among siblings          PgUp/PgDn scroll
 //! q / Esc      quit
 //! ```
 //!
@@ -47,7 +47,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use ratatui_json_editor::{
-    clip_spans, highlight_json, overlay, runs_to_spans, styled_runs, EditedEntry, EditError,
+    clip_spans, highlight_json, overlay, runs_to_spans, styled_runs, EditedEntry, EditError, Field,
     JsonEditor, JsonEditorState, Run, ScrollMode, Theme,
 };
 use ratatui_textarea::{DataCursor, Input, Key, TextArea};
@@ -112,12 +112,6 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
 
 // -- application state (modes, input, messages) -----------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Field {
-    Key,
-    Value,
-}
-
 #[derive(Clone)]
 struct Form {
     has_key: bool,
@@ -178,22 +172,30 @@ impl App {
                 self.state.cursor_up();
             }
             (Key::Char('h') | Key::Left, false) => {
-                self.state.cursor_to_parent();
+                self.state.select_left();
             }
             (Key::Char('l') | Key::Right, false) => {
-                self.state.cursor_to_first_child();
+                self.state.select_right();
             }
-            (Key::Char('e') | Key::Enter, false) => {
-                self.begin_edit(Field::Value, false);
+            (Key::Enter, false) => {
+                self.begin_edit(false);
+            }
+            (Key::Char('e'), false) => {
+                self.state.select_value();
+                self.begin_edit(false);
             }
             (Key::Char('r'), false) => {
-                self.begin_edit(Field::Key, false);
+                if self.state.select_key() {
+                    self.begin_edit(false);
+                } else {
+                    self.message = Some("only object entries have a key to edit".to_string());
+                }
             }
             (Key::Char('a'), false) => {
                 if let Err(err) = self.state.add_entry() {
                     self.message = Some(err.to_string());
                 } else {
-                    self.begin_edit(Field::Value, true);
+                    self.begin_edit(true);
                 }
             }
             (Key::Char('d') | Key::Char('x') | Key::Delete, false) => {
@@ -247,23 +249,18 @@ impl App {
         }
     }
 
-    fn begin_edit(&mut self, field: Field, clear_value: bool) {
+    fn begin_edit(&mut self, clear_value: bool) {
         self.message = None;
         let entry = self.state.edit();
-        let has_key = entry.key.is_some();
-        if field == Field::Key && !has_key {
-            self.message = Some("only object entries have a key to rename".to_string());
-            return;
-        }
         let form = Form {
-            has_key,
+            has_key: entry.key.is_some(),
             key: entry.key.unwrap_or_default(),
             value: if clear_value {
                 String::new()
             } else {
                 entry.value
             },
-            field,
+            field: self.state.selected_field(),
         };
         self.load_buffer(&form);
         self.edit_row = 0;
@@ -382,15 +379,18 @@ fn render_output(app: &App, area: Rect, frame: &mut Frame) {
 
 /// The text input: a framed full-width box above both panels, one text row
 /// tall. It is always visible so the layout never shifts — while editing it
-/// shows the live `ratatui-textarea` buffer, otherwise it mirrors the selected
-/// node's JSON text (compactly, to fit one line).
+/// shows the live `ratatui-textarea` buffer, otherwise it mirrors what is
+/// selected: the key's text or the value's compact JSON.
 fn render_input_line(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = match &app.mode {
         Mode::Edit(form) => match form.field {
             Field::Value => " Edit value as JSON text ",
             Field::Key => " Edit key as plain text ",
         },
-        Mode::Normal => " JSON text ",
+        Mode::Normal => match app.state.selected_field() {
+            Field::Value => " JSON text (value selected) ",
+            Field::Key => " Plain text (key selected) ",
+        },
     };
     let block = Block::bordered()
         .title(Line::styled(title, app.theme.popup_title))
@@ -401,7 +401,11 @@ fn render_input_line(frame: &mut Frame, app: &mut App, area: Rect) {
     if matches!(app.mode, Mode::Edit(_)) {
         render_input(frame, app, inner);
     } else if inner.height > 0 {
-        let text = app.state.selected().to_compact_string();
+        let entry = app.state.edit();
+        let text = match app.state.selected_field() {
+            Field::Key => entry.key.unwrap_or_default(),
+            Field::Value => app.state.selected().to_compact_string(),
+        };
         let chars: Vec<char> = text.chars().collect();
         let runs = styled_runs(&text, &app.theme);
         let spans = clip_spans(runs_to_spans(&chars, &runs, TAB_LEN), 0, inner.width as usize);
@@ -528,7 +532,7 @@ fn render_status(app: &App, area: Rect, frame: &mut Frame) {
 fn render_help(app: &App, area: Rect, frame: &mut Frame) {
     let text = match &app.mode {
         Mode::Normal => {
-            " j/k move  h/l parent/child  e edit value  r rename  a add  d delete  J/K reorder  PgUp/PgDn scroll  q quit "
+            " j/k line  h/l field  Enter edit  e edit value  r edit key  a add  d delete  J/K reorder  PgUp/PgDn  q quit "
         }
         Mode::Edit(form) => match form.field {
             Field::Value => {

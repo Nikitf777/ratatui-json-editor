@@ -30,7 +30,8 @@ pub struct Theme {
     pub cursor: Style,
     /// Background of the line under the tree cursor / edit cursor
     pub cursor_line: Style,
-    /// Background of selected text in edit mode
+    /// Background of the selected text: the key/value field selection in the
+    /// tree, and text selection in edit mode
     pub selection: Style,
     /// Style of the frame a consumer draws around its text input
     pub popup: Style,

@@ -53,6 +53,20 @@ impl std::fmt::Display for EditError {
 
 impl std::error::Error for EditError {}
 
+/// Which part of a node's line is selected: its key or its value.
+///
+/// Every line has a value; only object entries have a key. The current
+/// selection is reported by [`JsonEditorState::selected_field`] and moved with
+/// [`JsonEditorState::select_key`], [`JsonEditorState::select_value`],
+/// [`JsonEditorState::select_left`] and [`JsonEditorState::select_right`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    /// The key of an object entry.
+    Key,
+    /// The value.
+    Value,
+}
+
 /// The text of one node, ready to hand to a text input widget.
 ///
 /// This is a plain draft: edit the strings however you like and hand the struct
@@ -75,6 +89,7 @@ pub struct EditedEntry {
 pub struct JsonEditorState {
     root: Json,
     cursor: Vec<usize>,
+    field: Field,
     scroll: usize,
 }
 
@@ -84,6 +99,7 @@ impl JsonEditorState {
         Self {
             root,
             cursor: Vec::new(),
+            field: Field::Value,
             scroll: 0,
         }
     }
@@ -144,7 +160,9 @@ impl JsonEditorState {
 
     /// Moves the cursor to the parent node. Returns whether it moved.
     pub fn cursor_to_parent(&mut self) -> bool {
-        self.cursor.pop().is_some()
+        let moved = self.cursor.pop().is_some();
+        self.clamp_field();
+        moved
     }
 
     /// Moves the cursor to the first child of the selected container. Returns
@@ -152,9 +170,94 @@ impl JsonEditorState {
     pub fn cursor_to_first_child(&mut self) -> bool {
         if child_count(self.selected()) > 0 {
             self.cursor.push(0);
+            self.clamp_field();
             true
         } else {
             false
+        }
+    }
+
+    /// The key or value currently selected on the cursor line.
+    ///
+    /// [`Field::Key`] is only ever reported for object entries; every other
+    /// node selects [`Field::Value`].
+    pub fn selected_field(&self) -> Field {
+        self.field
+    }
+
+    /// Selects the key of the cursor line. Returns whether the key is now
+    /// selected — `false` when the node has no key (the root value or an array
+    /// element).
+    pub fn select_key(&mut self) -> bool {
+        if self.has_key() {
+            self.field = Field::Key;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Selects the value of the cursor line. Every node has a value, so this
+    /// always succeeds and returns `true`.
+    pub fn select_value(&mut self) -> bool {
+        self.field = Field::Value;
+        true
+    }
+
+    /// Selects the previous field without ever changing level: the key of a
+    /// selected value, or the value of the sibling line above when the key is
+    /// selected. Returns `false` at the first field of the level.
+    pub fn select_left(&mut self) -> bool {
+        match self.field {
+            Field::Value if self.has_key() => {
+                self.field = Field::Key;
+                true
+            }
+            _ => self.select_sibling_field(false),
+        }
+    }
+
+    /// Selects the next field without ever changing level: the value of a
+    /// selected key, or the key of the sibling line below when the value is
+    /// selected. Returns `false` at the last field of the level.
+    pub fn select_right(&mut self) -> bool {
+        match self.field {
+            Field::Key => {
+                self.field = Field::Value;
+                true
+            }
+            _ => self.select_sibling_field(true),
+        }
+    }
+
+    fn select_sibling_field(&mut self, forward: bool) -> bool {
+        let Some(&last) = self.cursor.last() else {
+            return false;
+        };
+        let len = child_count(node_at(&self.root, &self.cursor[..self.cursor.len() - 1]));
+        let target = if forward {
+            (last + 1 < len).then_some(last + 1)
+        } else {
+            last.checked_sub(1)
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        *self.cursor.last_mut().unwrap() = target;
+        self.field = match (forward, self.has_key()) {
+            (true, true) => Field::Key,
+            _ => Field::Value,
+        };
+        true
+    }
+
+    fn has_key(&self) -> bool {
+        entry_key(&self.root, &self.cursor).is_some()
+    }
+
+    fn clamp_field(&mut self) {
+        if self.field == Field::Key && !self.has_key() {
+            self.field = Field::Value;
         }
     }
 
@@ -197,6 +300,7 @@ impl JsonEditorState {
         match new_path {
             Some(path) => {
                 self.cursor = path;
+                self.field = Field::Value;
                 Ok(())
             }
             None => Err(EditError::Refused("cannot add an entry here")),
@@ -227,6 +331,7 @@ impl JsonEditorState {
             path.push(index.min(remaining - 1));
         }
         self.cursor = path;
+        self.clamp_field();
         Ok(())
     }
 
@@ -270,6 +375,7 @@ impl JsonEditorState {
         let mut path = cursor[..cursor.len() - 1].to_vec();
         path.push(swap_with);
         self.cursor = path;
+        self.clamp_field();
         Ok(())
     }
 
@@ -382,6 +488,7 @@ impl JsonEditorState {
             return false;
         }
         self.cursor = paths[target].clone();
+        self.clamp_field();
         true
     }
 }
@@ -664,6 +771,87 @@ mod tests {
         assert_eq!(state.scroll(), 1, "minimal scroll to show the cursor");
         state.ensure_cursor_visible(10);
         assert_eq!(state.scroll(), 1, "already visible");
+    }
+
+    #[test]
+    fn select_key_and_value() {
+        let mut s = doc(r#"{"a": 1}"#);
+        s.cursor_down();
+        assert_eq!(s.selected_field(), Field::Value);
+        assert!(s.select_key());
+        assert_eq!(s.selected_field(), Field::Key);
+        assert!(s.select_key(), "already selected still succeeds");
+        assert!(s.select_value());
+        assert_eq!(s.selected_field(), Field::Value);
+
+        let mut s = doc("[1]");
+        s.cursor_down();
+        assert!(!s.select_key(), "array elements have no key");
+        assert_eq!(s.selected_field(), Field::Value);
+
+        let mut s = doc(r#"{"a": 1}"#);
+        assert!(!s.select_key(), "the root has no key");
+    }
+
+    #[test]
+    fn select_left_and_right_stay_on_the_level() {
+        let mut s = doc(r#"{"a": {"x": 1}, "b": 2}"#);
+        s.cursor_down();
+        assert!(s.select_key());
+        assert_eq!(s.cursor_path(), [0]);
+
+        assert!(s.select_right(), "key -> value");
+        assert_eq!(s.cursor_path(), [0]);
+        assert_eq!(s.selected_field(), Field::Value);
+
+        assert!(s.select_right(), "value -> key of the next line");
+        assert_eq!(s.cursor_path(), [1], "skips the child of a container");
+        assert_eq!(s.selected_field(), Field::Key);
+
+        assert!(s.select_right(), "key -> value");
+        assert_eq!(s.cursor_path(), [1]);
+        assert_eq!(s.selected_field(), Field::Value);
+        assert!(!s.select_right(), "last field of the level");
+
+        assert!(s.select_left(), "value -> key");
+        assert_eq!(s.cursor_path(), [1]);
+        assert_eq!(s.selected_field(), Field::Key);
+
+        assert!(s.select_left(), "key -> value of the line above");
+        assert_eq!(s.cursor_path(), [0]);
+        assert_eq!(s.selected_field(), Field::Value);
+
+        assert!(s.select_left(), "value -> key");
+        assert_eq!(s.selected_field(), Field::Key);
+        assert!(!s.select_left(), "first field of the level");
+    }
+
+    #[test]
+    fn arrays_select_values_across_lines() {
+        let mut s = doc("[1, 2]");
+        s.cursor_down();
+        assert!(!s.select_key());
+        assert!(s.select_right(), "value -> value of the next line");
+        assert_eq!(s.cursor_path(), [1]);
+        assert_eq!(s.selected_field(), Field::Value);
+        assert!(!s.select_right(), "last field of the level");
+        assert!(s.select_left());
+        assert_eq!(s.cursor_path(), [0]);
+    }
+
+    #[test]
+    fn moving_between_lines_keeps_the_field() {
+        let mut s = doc(r#"{"a": 1, "b": 2}"#);
+        s.cursor_down();
+        assert!(s.select_key());
+        s.cursor_down();
+        assert_eq!(s.cursor_path(), [1]);
+        assert_eq!(s.selected_field(), Field::Key, "field follows the selection");
+        s.cursor_up();
+        assert_eq!(s.selected_field(), Field::Key);
+        s.cursor_up();
+        assert_eq!(s.cursor_path(), Vec::<usize>::new());
+        assert_eq!(s.selected_field(), Field::Value, "clamped where no key exists");
     }
 
     #[test]

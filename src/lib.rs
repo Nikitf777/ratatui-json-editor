@@ -52,5 +52,5 @@ pub use highlight::{
     TokenKind,
 };
 pub use json::{quote_string, Json, Number, ParseError};
-pub use state::{EditError, EditedEntry, JsonEditorState};
+pub use state::{EditError, EditedEntry, Field, JsonEditorState};
 pub use widget::{JsonEditor, ScrollMode};
