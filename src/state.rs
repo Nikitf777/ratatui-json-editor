@@ -1,16 +1,18 @@
 //! JSON tree state and editing operations.
 //!
-//! [`JsonEditorState`] owns the document and the cursor and nothing else: no
-//! key handling, no text buffer, no rendering. Text input is delegated to the
-//! consumer as a two-step transaction:
+//! [`JsonEditorState`] owns the document, the cursor and the key/value
+//! selection and nothing else: no key handling, no text buffer, no rendering.
+//! Text input is delegated to the consumer as a two-step transaction through
+//! the selection:
 //!
-//! 1. [`JsonEditorState::edit`] returns the [`EditedEntry`] — the key and
-//!    value text of the selected node — to put into whatever input widget the
-//!    consumer renders.
-//! 2. [`JsonEditorState::commit`] takes the edited text back and applies it
-//!    **only if it is valid** (the value must parse as JSON, keys must be
+//! 1. [`JsonEditorState::edit`] returns the text of the selected field — the
+//!    key or the value — to put into whatever input widget the consumer
+//!    renders.
+//! 2. [`JsonEditorState::commit`] applies text back to that field, and **only
+//!    if it is valid** (values follow forgiving JSON rules, keys must be
 //!    unique and single-line). On [`EditError`] the state is untouched, so the
-//!    document always serializes to valid JSON.
+//!    document always serializes to valid JSON. Keys and values are validated
+//!    independently, so committing one never touches the other.
 //!
 //! Structural operations ([`JsonEditorState::add_entry`],
 //! [`JsonEditorState::delete_entry`], [`JsonEditorState::move_entry_up`],
@@ -29,9 +31,6 @@ pub enum EditError {
     DuplicateKey(String),
     /// Keys cannot contain line breaks.
     MultiLineKey,
-    /// A key was given for a node that has none (the root value or an array
-    /// element).
-    KeyNotAllowed,
     /// The operation does not apply to the current node; the message explains
     /// why.
     Refused(&'static str),
@@ -43,9 +42,6 @@ impl std::fmt::Display for EditError {
             EditError::InvalidJson(err) => write!(f, "{err}"),
             EditError::DuplicateKey(key) => write!(f, "duplicate key {}", quote_string(key)),
             EditError::MultiLineKey => write!(f, "a key must fit on one line"),
-            EditError::KeyNotAllowed => {
-                write!(f, "the root value and array elements have no key")
-            }
             EditError::Refused(message) => f.write_str(message),
         }
     }
@@ -65,28 +61,6 @@ pub enum Field {
     Key,
     /// The value.
     Value,
-}
-
-/// The text of one node, ready to hand to a text input widget.
-///
-/// This is a plain draft: edit the strings however you like and hand the struct
-/// back to [`JsonEditorState::commit`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EditedEntry {
-    /// The key of an object entry. `None` means "keep the current key" (and is
-    /// required for nodes that have no key: the root value and array elements).
-    pub key: Option<String>,
-    /// The editable text of the value: strings lose their quotes and
-    /// containers their outer brackets (items stay JSON text, joined with
-    /// `, `), numbers and literals are written as usual (`null` stays the
-    /// literal `null`), and empty containers keep `[]` / `{}`.
-    ///
-    /// Submitting is forgiving in the same way: empty text is the empty
-    /// string, bare text is detected as a number, literal or string (`"some"`
-    /// is a string, `"a", "b"` is an array), and text missing only its closing
-    /// quote or brackets is completed (`"some` submits `"some"`, `[1, 2`
-    /// submits `[1, 2]`).
-    pub value: String,
 }
 
 /// The document, the cursor, and the scroll position of a JSON tree.
@@ -387,64 +361,63 @@ impl JsonEditorState {
         Ok(())
     }
 
-    /// Returns the editable text of the selected node.
-    ///
-    /// Nothing is being edited yet — this is a plain draft for the consumer's
-    /// input widget, in the forgiving form described by [`EditedEntry`]: a
-    /// string's content without quotes, a container's items without the outer
-    /// brackets. Hand the result (possibly modified) to
+    /// Returns the editable text of the selected field: the key's plain text,
+    /// or the value in the forgiving form described by
+    /// [`JsonEditorState::commit`] — a string's content without quotes, a
+    /// container's items without the outer brackets. Hand it to whatever input
+    /// widget you like and pass the result back to
     /// [`JsonEditorState::commit`], or drop it to change nothing.
-    pub fn edit(&self) -> EditedEntry {
-        EditedEntry {
-            key: entry_key(&self.root, &self.cursor).map(str::to_string),
-            value: expose_value(self.selected()),
+    pub fn edit(&self) -> String {
+        match self.field {
+            Field::Key => entry_key(&self.root, &self.cursor).unwrap_or_default().to_string(),
+            Field::Value => expose_value(self.selected()),
         }
     }
 
-    /// Applies an [`EditedEntry`] to the selected node.
+    /// Applies text to the selected field.
     ///
-    /// The text is interpreted with the forgiving rules of
-    /// [`EditedEntry::value`] (type detection, array/object shorthand, missing
-    /// closers); text that starts like JSON but stays broken is rejected, as
-    /// are multi-line and duplicate keys. If anything is wrong, [`EditError`]
-    /// is returned and the document is left untouched.
-    pub fn commit(&mut self, edited: EditedEntry) -> Result<(), EditError> {
-        let EditedEntry { key, value } = edited;
-        let value = interpret_value(&value).map_err(EditError::InvalidJson)?;
-
+    /// Values are interpreted forgivingly: strict JSON wins (with missing
+    /// closers completed), comma-separated items become an array (or an object
+    /// when every item is a `"key": value` pair), and any other bare text
+    /// becomes a string (so empty text is the empty string, and `"some"` is a
+    /// string while `"a", "b"` is an array). Keys must be single-line and
+    /// unique among their siblings. Keys and values are validated
+    /// independently: committing one never touches the other, and on
+    /// [`EditError`] the document is left untouched.
+    pub fn commit(&mut self, text: impl AsRef<str>) -> Result<(), EditError> {
+        let text = text.as_ref();
         let path = self.cursor.clone();
-        if path.is_empty() {
-            if key.is_some() {
-                return Err(EditError::KeyNotAllowed);
+        if self.field == Field::Value {
+            let value = interpret_value(text).map_err(EditError::InvalidJson)?;
+            if path.is_empty() {
+                self.root = value;
+            } else if let Some(slot) = node_at_mut(&mut self.root, &path) {
+                *slot = value;
             }
-            self.root = value;
             return Ok(());
         }
 
-        let last = *path.last().unwrap();
-        let parent_path = &path[..path.len() - 1];
-        if let Some(key) = key {
-            let Json::Object(entries) = node_at(&self.root, parent_path) else {
-                return Err(EditError::KeyNotAllowed);
-            };
-            if key.contains('\n') {
-                return Err(EditError::MultiLineKey);
-            }
-            if entries
-                .iter()
-                .enumerate()
-                .any(|(i, (other, _))| i != last && *other == key)
-            {
-                return Err(EditError::DuplicateKey(key));
-            }
-            if let Some(Json::Object(entries)) = node_at_mut(&mut self.root, parent_path)
-                && let Some(entry) = entries.get_mut(last)
-            {
-                entry.0 = key;
-            }
+        // A key selection implies an object entry.
+        let Some((&last, parent_path)) = path.split_last() else {
+            return Err(EditError::Refused("the root value has no key"));
+        };
+        if text.contains('\n') {
+            return Err(EditError::MultiLineKey);
         }
-        if let Some(slot) = node_at_mut(&mut self.root, &path) {
-            *slot = value;
+        let Json::Object(entries) = node_at(&self.root, parent_path) else {
+            return Err(EditError::Refused("only object entries have keys"));
+        };
+        if entries
+            .iter()
+            .enumerate()
+            .any(|(i, (other, _))| i != last && *other == text)
+        {
+            return Err(EditError::DuplicateKey(text.to_string()));
+        }
+        if let Some(Json::Object(entries)) = node_at_mut(&mut self.root, parent_path)
+            && let Some(entry) = entries.get_mut(last)
+        {
+            entry.0 = text.to_string();
         }
         Ok(())
     }
@@ -623,7 +596,7 @@ fn parse_completing(text: &str) -> Result<Json, ParseError> {
     })
 }
 
-/// The editable text of a value: see [`EditedEntry::value`].
+/// The editable text of a value: see [`JsonEditorState::edit`].
 fn expose_value(value: &Json) -> String {
     match value {
         Json::String(s) => s.clone(),
@@ -645,7 +618,7 @@ fn expose_value(value: &Json) -> String {
     }
 }
 
-/// Interprets edited value text: see [`EditedEntry::value`]. Strict JSON (with
+/// Interprets edited value text: see [`JsonEditorState::commit`]. Strict JSON (with
 /// missing closers completed) wins; comma-separated items become an array, or
 /// an object when every item is a `"key": value` pair; any other bare text
 /// becomes a string. Text that starts like JSON but stays broken is an error.
@@ -745,11 +718,9 @@ mod tests {
         JsonEditorState::parse(src).unwrap()
     }
 
-    fn entry(value: &str) -> EditedEntry {
-        EditedEntry {
-            key: None,
-            value: value.into(),
-        }
+    /// Editable field text, for brevity in the tests.
+    fn entry(value: &str) -> String {
+        value.to_string()
     }
 
     fn assert_valid(state: &JsonEditorState) {
@@ -758,24 +729,24 @@ mod tests {
     }
 
     #[test]
-    fn edit_returns_drafts() {
-        let state = doc(r#"{"a": [1], "b": null}"#);
-        let root = state.edit();
-        assert_eq!(root.key, None);
-        assert_eq!(root.value, "\"a\": [1], \"b\": null");
-
-        let mut state = state;
-        state.cursor_down();
-        let draft = state.edit();
-        assert_eq!(draft.key.as_deref(), Some("a"));
-        assert_eq!(draft.value, "1", "array items without brackets");
+    fn edit_returns_the_selected_fields_text() {
+        let mut state = doc(r#"{"a": [1], "b": null}"#);
+        assert_eq!(state.edit(), "\"a\": [1], \"b\": null", "root value");
 
         state.cursor_down();
-        assert_eq!(state.edit(), entry("1"));
+        assert!(state.select_key());
+        assert_eq!(state.edit(), "a");
+        assert!(state.select_value());
+        assert_eq!(state.edit(), "1", "array items without brackets");
 
         state.cursor_down();
-        assert_eq!(state.edit().key.as_deref(), Some("b"));
-        assert_eq!(state.edit().value, "null", "null is the literal text");
+        assert_eq!(state.edit(), "1");
+
+        state.cursor_down();
+        assert!(state.select_key());
+        assert_eq!(state.edit(), "b");
+        assert!(state.select_value());
+        assert_eq!(state.edit(), "null", "null is the literal text");
     }
 
     #[test]
@@ -901,46 +872,29 @@ mod tests {
     }
 
     #[test]
-    fn commit_can_rename_and_checks_keys() {
+    fn commit_renames_and_checks_keys() {
         let mut state = doc(r#"{"a": 1, "b": 2}"#);
         state.cursor_down();
-        let mut draft = state.edit();
-        draft.key = Some("c".into());
-        assert!(state.commit(draft).is_ok());
+        assert!(state.select_key());
+        assert!(state.commit("c").is_ok());
         assert_eq!(state.root(), &Json::parse(r#"{"c": 1, "b": 2}"#).unwrap());
 
-        let mut draft = state.edit();
-        draft.key = Some("b".into());
-        assert_eq!(
-            state.commit(draft),
-            Err(EditError::DuplicateKey("b".into()))
-        );
-        let mut draft = state.edit();
-        draft.key = Some("x\ny".into());
-        assert_eq!(state.commit(draft), Err(EditError::MultiLineKey));
+        assert_eq!(state.commit("b"), Err(EditError::DuplicateKey("b".into())));
+        assert_eq!(state.commit("x\ny"), Err(EditError::MultiLineKey));
         assert_eq!(state.root(), &Json::parse(r#"{"c": 1, "b": 2}"#).unwrap());
     }
 
     #[test]
-    fn keys_are_only_allowed_on_object_entries() {
-        let mut state = doc("[1]");
-        state.cursor_down();
-        let mut draft = state.edit();
-        draft.key = Some("x".into());
-        assert_eq!(state.commit(draft), Err(EditError::KeyNotAllowed));
-
-        let mut state = doc(r#"{"a": 1}"#);
-        let mut draft = state.edit();
-        draft.key = Some("x".into());
-        assert_eq!(state.commit(draft), Err(EditError::KeyNotAllowed));
-    }
-
-    #[test]
-    fn key_none_keeps_the_key() {
+    fn committing_one_field_never_touches_the_other() {
         let mut state = doc(r#"{"a": 1}"#);
         state.cursor_down();
-        assert!(state.commit(entry("2")).is_ok());
+        assert!(state.commit("2").is_ok(), "value commit keeps the key");
         assert_eq!(state.root(), &Json::parse(r#"{"a": 2}"#).unwrap());
+
+        assert!(state.select_key());
+        assert!(state.commit("z").is_ok(), "key commit keeps the value");
+        assert_eq!(state.root(), &Json::parse(r#"{"z": 2}"#).unwrap());
+        assert_valid(&state);
     }
 
     #[test]

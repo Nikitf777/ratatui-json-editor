@@ -15,6 +15,10 @@
 //! * a `tui-scrollbar` scrollbar (fractional thumb), driven by the state's
 //!   viewport accessors with `ScrollMode::Manual`.
 //!
+//! The state's key/value selection is the single source of truth for what is
+//! being edited: edit mode always edits exactly the selected field, and the
+//! tree highlights it while you type.
+//!
 //! Without an argument the demo starts from a small sample document; with one
 //! it loads the given file. On exit the (always valid) JSON is printed to
 //! stdout.
@@ -33,7 +37,8 @@
 //! operations work (`Ctrl+U` undo, `Ctrl+R` redo, `Ctrl+W` delete word,
 //! `Ctrl+K`/`Ctrl+J` delete to end/start of line, word motions, yank/paste,
 //! ...), plus `Enter` to commit (rejected while the text is not valid JSON),
-//! `Esc` to cancel and `Tab` to switch between editing the key and the value.
+//! `Esc` to cancel, and `Tab` / `Shift+Tab` to commit and continue with the
+//! next / previous key or value, like moving between cells in a spreadsheet.
 
 use std::io;
 
@@ -47,8 +52,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use ratatui_json_editor::{
-    clip_spans, highlight_json, overlay, runs_to_spans, styled_runs, EditedEntry, EditError, Field,
-    JsonEditor, JsonEditorState, Run, ScrollMode, Theme,
+    clip_spans, highlight_json, overlay, runs_to_spans, styled_runs, EditError, Field, JsonEditor,
+    JsonEditorState, Run, ScrollMode, Theme,
 };
 use ratatui_textarea::{DataCursor, Input, Key, TextArea};
 use tui_scrollbar::{GlyphSet, ScrollBar, ScrollBarArrows, ScrollLengths};
@@ -102,7 +107,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                     return Ok(());
                 }
             }
-            Event::Paste(text) if matches!(app.mode, Mode::Edit(_)) => {
+            Event::Paste(text) if app.mode == Mode::Edit => {
                 app.textarea.insert_str(&text);
             }
             _ => {}
@@ -112,17 +117,10 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
 
 // -- application state (modes, input, messages) -----------------------------
 
-#[derive(Clone)]
-struct Form {
-    has_key: bool,
-    key: String,
-    value: String,
-    field: Field,
-}
-
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Normal,
-    Edit(Form),
+    Edit,
 }
 
 struct App {
@@ -154,8 +152,8 @@ impl App {
     fn handle_key(&mut self, input: Input) -> bool {
         match self.mode {
             Mode::Normal => self.normal_key(input),
-            Mode::Edit(_) => {
-                self.edit_key(input);
+            Mode::Edit => {
+                self.edit_input(input);
                 false
             }
         }
@@ -178,15 +176,15 @@ impl App {
                 self.state.select_right();
             }
             (Key::Enter, false) => {
-                self.begin_edit(false);
+                self.begin_edit();
             }
             (Key::Char('e'), false) => {
                 self.state.select_value();
-                self.begin_edit(false);
+                self.begin_edit();
             }
             (Key::Char('r'), false) => {
                 if self.state.select_key() {
-                    self.begin_edit(false);
+                    self.begin_edit();
                 } else {
                     self.message = Some("only object entries have a key to edit".to_string());
                 }
@@ -198,7 +196,7 @@ impl App {
                     // New properties are named first; array elements have no
                     // key, so `select_key` leaves their value selected.
                     self.state.select_key();
-                    self.begin_edit(true);
+                    self.begin_edit();
                 }
             }
             (Key::Char('d') | Key::Char('x') | Key::Delete, false) => {
@@ -229,21 +227,35 @@ impl App {
         false
     }
 
-    fn edit_key(&mut self, input: Input) {
+    fn edit_input(&mut self, input: Input) {
         self.message = None;
-        let has_key = match &self.mode {
-            Mode::Edit(form) => form.has_key,
-            Mode::Normal => return,
-        };
         match (input.key, input.ctrl, input.alt, input.shift) {
             (Key::Esc, ..) => self.cancel(),
-            (Key::Enter | Key::Char('\n' | '\r'), false, false, false) => self.commit(),
+            (Key::Enter | Key::Char('\n' | '\r'), false, false, false) => match self.commit_edit() {
+                Ok(()) => self.mode = Mode::Normal,
+                Err(err) => self.message = Some(err.to_string()),
+            },
             (Key::Enter | Key::Char('\n' | '\r'), ..) => self.textarea.insert_newline(),
-            (Key::Tab, ..) if has_key => self.toggle_field(),
+            (Key::Tab, ..) => self.tab_to(!input.shift),
             _ => {
                 self.textarea.input(input);
             }
         }
+    }
+
+    /// Like moving between cells in a spreadsheet: commit what is typed, then
+    /// continue editing the next (or previous) key or value.
+    fn tab_to(&mut self, forward: bool) {
+        if let Err(err) = self.commit_edit() {
+            self.message = Some(err.to_string());
+            return;
+        }
+        if forward {
+            self.state.select_right();
+        } else {
+            self.state.select_left();
+        }
+        self.begin_edit();
     }
 
     fn report(&mut self, result: Result<(), EditError>) {
@@ -252,77 +264,25 @@ impl App {
         }
     }
 
-    fn begin_edit(&mut self, clear_value: bool) {
+    /// Starts editing exactly what is selected; the tree keeps highlighting it.
+    fn begin_edit(&mut self) {
         self.message = None;
-        let entry = self.state.edit();
-        let form = Form {
-            has_key: entry.key.is_some(),
-            key: entry.key.unwrap_or_default(),
-            value: if clear_value {
-                String::new()
-            } else {
-                entry.value
-            },
-            field: self.state.selected_field(),
-        };
-        self.load_buffer(&form);
-        self.edit_row = 0;
-        self.edit_col = 0;
-        self.mode = Mode::Edit(form);
-    }
-
-    fn load_buffer(&mut self, form: &Form) {
-        let text = match form.field {
-            Field::Key => &form.key,
-            Field::Value => &form.value,
-        };
+        let text = self.state.edit();
         self.textarea = TextArea::from(text.split('\n'));
         self.textarea.set_tab_length(TAB_LEN as u8);
+        self.edit_row = 0;
+        self.edit_col = 0;
+        self.mode = Mode::Edit;
+    }
+
+    /// Commits the buffer to the selected field; the other is untouched.
+    fn commit_edit(&mut self) -> Result<(), EditError> {
+        let text = self.buffer_text();
+        self.state.commit(&text)
     }
 
     fn buffer_text(&self) -> String {
         self.textarea.lines().join("\n")
-    }
-
-    fn toggle_field(&mut self) {
-        let text = self.buffer_text();
-        let Mode::Edit(form) = &self.mode else { return };
-        let mut next = form.clone();
-        match next.field {
-            Field::Key => {
-                next.key = text;
-                next.field = Field::Value;
-            }
-            Field::Value => {
-                next.value = text;
-                next.field = Field::Key;
-            }
-        }
-        self.load_buffer(&next);
-        self.edit_row = 0;
-        self.edit_col = 0;
-        self.mode = Mode::Edit(next);
-    }
-
-    fn commit(&mut self) {
-        let text = self.buffer_text();
-        let Mode::Edit(form) = &mut self.mode else { return };
-        match form.field {
-            Field::Key => form.key = text,
-            Field::Value => form.value = text,
-        }
-        let Mode::Edit(form) = &self.mode else { return };
-        let edited = EditedEntry {
-            key: form.has_key.then(|| form.key.clone()),
-            value: form.value.clone(),
-        };
-        match self.state.commit(edited) {
-            Ok(()) => {
-                self.mode = Mode::Normal;
-                self.message = None;
-            }
-            Err(err) => self.message = Some(err.to_string()),
-        }
     }
 
     fn cancel(&mut self) {
@@ -385,15 +345,11 @@ fn render_output(app: &App, area: Rect, frame: &mut Frame) {
 /// shows the live `ratatui-textarea` buffer, otherwise it mirrors what is
 /// selected: the key's text or the value's compact JSON.
 fn render_input_line(frame: &mut Frame, app: &mut App, area: Rect) {
-    let title = match &app.mode {
-        Mode::Edit(form) => match form.field {
-            Field::Value => " Edit value as JSON text ",
-            Field::Key => " Edit key as plain text ",
-        },
-        Mode::Normal => match app.state.selected_field() {
-            Field::Value => " JSON text (value selected) ",
-            Field::Key => " Plain text (key selected) ",
-        },
+    let title = match (app.mode, app.state.selected_field()) {
+        (Mode::Edit, Field::Value) => " Edit value as JSON text ",
+        (Mode::Edit, Field::Key) => " Edit key as plain text ",
+        (Mode::Normal, Field::Value) => " JSON text (value selected) ",
+        (Mode::Normal, Field::Key) => " Plain text (key selected) ",
     };
     let block = Block::bordered()
         .title(Line::styled(title, app.theme.popup_title))
@@ -401,12 +357,11 @@ fn render_input_line(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if matches!(app.mode, Mode::Edit(_)) {
+    if app.mode == Mode::Edit {
         render_input(frame, app, inner);
     } else if inner.height > 0 {
-        let entry = app.state.edit();
         let text = match app.state.selected_field() {
-            Field::Key => entry.key.unwrap_or_default(),
+            Field::Key => app.state.edit(),
             Field::Value => app.state.selected().to_compact_string(),
         };
         let chars: Vec<char> = text.chars().collect();
@@ -426,8 +381,10 @@ fn render_input(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let height = area.height as usize;
     let width = area.width as usize;
-    let Mode::Edit(form) = &app.mode else { return };
-    let form = form.clone();
+    if app.mode != Mode::Edit {
+        return;
+    }
+    let field = app.state.selected_field();
     let theme = app.theme.clone();
     let lines = app.textarea.lines();
     let DataCursor(cursor_row, cursor_col) = app.textarea.cursor();
@@ -461,7 +418,7 @@ fn render_input(frame: &mut Frame, app: &mut App, area: Rect) {
     for row in 0..height {
         let Some(line) = lines.get(top + row) else { break };
         let chars: Vec<char> = line.chars().collect();
-        let mut runs: Vec<Run> = match form.field {
+        let mut runs: Vec<Run> = match field {
             Field::Value => styled_runs(line, &theme),
             Field::Key => vec![(0, chars.len(), theme.key)],
         };
@@ -512,12 +469,10 @@ fn display_width(text: &str) -> usize {
 }
 
 fn render_status(app: &App, area: Rect, frame: &mut Frame) {
-    let (mode, color) = match &app.mode {
-        Mode::Normal => (" NORMAL ", Color::LightCyan),
-        Mode::Edit(form) => match form.field {
-            Field::Value => (" EDIT VALUE ", Color::LightYellow),
-            Field::Key => (" EDIT KEY ", Color::LightYellow),
-        },
+    let (mode, color) = match (app.mode, app.state.selected_field()) {
+        (Mode::Normal, _) => (" NORMAL ", Color::LightCyan),
+        (Mode::Edit, Field::Value) => (" EDIT VALUE ", Color::LightYellow),
+        (Mode::Edit, Field::Key) => (" EDIT KEY ", Color::LightYellow),
     };
     let mut spans = vec![
         Span::styled(mode, Style::new().fg(Color::Black).bg(color).bold()),
@@ -533,18 +488,16 @@ fn render_status(app: &App, area: Rect, frame: &mut Frame) {
 }
 
 fn render_help(app: &App, area: Rect, frame: &mut Frame) {
-    let text = match &app.mode {
-        Mode::Normal => {
+    let text = match (app.mode, app.state.selected_field()) {
+        (Mode::Normal, _) => {
             " j/k line  h/l field  Enter edit  e edit value  r edit key  a add  d delete  J/K reorder  PgUp/PgDn  q quit "
         }
-        Mode::Edit(form) => match form.field {
-            Field::Value => {
-                " typing JSON text (textarea ops: C-u undo, C-w del word, ...)  Enter commit if valid  Esc cancel  Tab key "
-            }
-            Field::Key => {
-                " typing plain key text (textarea ops: C-u undo, C-w del word, ...)  Enter commit  Esc cancel  Tab value "
-            }
-        },
+        (Mode::Edit, Field::Value) => {
+            " typing JSON text (textarea ops: C-u undo, C-w del word, ...)  Enter commit if valid  Esc cancel  Tab next field "
+        }
+        (Mode::Edit, Field::Key) => {
+            " typing plain key text (textarea ops: C-u undo, C-w del word, ...)  Enter commit  Esc cancel  Tab next field "
+        }
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(

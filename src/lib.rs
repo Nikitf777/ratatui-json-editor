@@ -3,12 +3,13 @@
 //!
 //! The crate is split into two small halves:
 //!
-//! * [`JsonEditorState`] — the document, the cursor and the editing
-//!   operations. Editing is a transaction: [`JsonEditorState::edit`] hands you
-//!   the node's key/value text to put into **whatever input widget you like**,
-//!   and [`JsonEditorState::commit`] applies it only when it is valid JSON.
-//!   Structural operations (add/delete/reorder) keep the document valid by
-//!   construction.
+//! * [`JsonEditorState`] — the document, the cursor and the key/value
+//!   selection. Editing is a transaction through that selection:
+//!   [`JsonEditorState::edit`] hands you the selected field's text to put into
+//!   **whatever input widget you like**, and [`JsonEditorState::commit`]
+//!   applies it back to that field only when it is valid — the other field is
+//!   never touched. Structural operations (add/delete/reorder) keep the
+//!   document valid by construction.
 //! * [`JsonEditor`] — a stateless [`StatefulWidget`] that renders the state as
 //!   a syntax-highlighted JSON tree ([`Theme`]). Overflow is delegated to the
 //!   consumer through [`ScrollMode`] and the state's viewport accessors, so
@@ -20,21 +21,18 @@
 //! full-width input above the panels, and a scrollbar.
 //!
 //! ```
-//! use ratatui_json_editor::{EditedEntry, JsonEditorState};
+//! use ratatui_json_editor::JsonEditorState;
 //!
 //! let mut state = JsonEditorState::parse(r#"{"answer": 0}"#).unwrap();
-//! state.cursor_down(); // select root["answer"]
+//! state.cursor_down(); // select root["answer"] (values are selected by default)
 //!
-//! // Hand `entry` to your input widget; here we just replace the text.
-//! let mut entry = state.edit();
-//! assert_eq!(entry.value, "0");
-//! entry.value = "forty two".to_string(); // bare text is detected as a string
-//! assert!(state.commit(entry).is_ok());
+//! // Hand `state.edit()` to your input widget; here we just replace the text.
+//! assert_eq!(state.edit(), "0");
+//! assert!(state.commit("forty two").is_ok()); // bare text is detected as a string
 //! assert_eq!(state.root().to_compact_string(), r#"{"answer":"forty two"}"#);
 //!
 //! // Invalid text is rejected and never reaches the document.
-//! let bad = EditedEntry { key: None, value: "[1,]".to_string() };
-//! assert!(state.commit(bad).is_err());
+//! assert!(state.commit("[1,]").is_err());
 //! assert_eq!(state.root().to_compact_string(), r#"{"answer":"forty two"}"#);
 //! ```
 //!
@@ -52,5 +50,5 @@ pub use highlight::{
     TokenKind,
 };
 pub use json::{quote_string, Json, Number, ParseError};
-pub use state::{EditError, EditedEntry, Field, JsonEditorState};
+pub use state::{EditError, Field, JsonEditorState};
 pub use widget::{JsonEditor, ScrollMode};
