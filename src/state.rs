@@ -76,10 +76,16 @@ pub struct EditedEntry {
     /// The key of an object entry. `None` means "keep the current key" (and is
     /// required for nodes that have no key: the root value and array elements).
     pub key: Option<String>,
-    /// The value as JSON text, e.g. `"hello"`, `42` or `{"a": [1, 2]}`.
-    /// Empty text is treated as `null`, and text that is only missing its
-    /// closing quote or brackets is completed: a lone `"` submits `""`, and
-    /// `[1, 2` submits `[1, 2]`.
+    /// The editable text of the value: strings lose their quotes and
+    /// containers their outer brackets (items stay JSON text, joined with
+    /// `, `), numbers and literals are written as usual (`null` stays the
+    /// literal `null`), and empty containers keep `[]` / `{}`.
+    ///
+    /// Submitting is forgiving in the same way: empty text is the empty
+    /// string, bare text is detected as a number, literal or string (`"some"`
+    /// is a string, `"a", "b"` is an array), and text missing only its closing
+    /// quote or brackets is completed (`"some` submits `"some"`, `[1, 2`
+    /// submits `[1, 2]`).
     pub value: String,
 }
 
@@ -263,20 +269,20 @@ impl JsonEditorState {
         }
     }
 
-    /// Adds a `null` entry and selects it: a child when the cursor is on a
-    /// container, otherwise a sibling after the cursor.
+    /// Adds an empty string entry and selects it: a child when the cursor is
+    /// on a container, otherwise a sibling after the cursor.
     pub fn add_entry(&mut self) -> Result<(), EditError> {
         let cursor = self.cursor.clone();
         let mut new_path = None;
         match self.selected() {
             Json::Array(_) | Json::Object(_) => match node_at_mut(&mut self.root, &cursor) {
                 Some(Json::Array(items)) => {
-                    items.push(Json::Null);
+                    items.push(Json::String(String::new()));
                     new_path = Some(child_path(&cursor, items.len() - 1));
                 }
                 Some(Json::Object(entries)) => {
                     let key = unique_key(entries);
-                    entries.push((key, Json::Null));
+                    entries.push((key, Json::String(String::new())));
                     new_path = Some(child_path(&cursor, entries.len() - 1));
                 }
                 _ => {}
@@ -288,12 +294,12 @@ impl JsonEditorState {
             }
             _ => match parent_of(&mut self.root, &cursor) {
                 Some((Json::Array(items), index)) => {
-                    items.insert(index + 1, Json::Null);
+                    items.insert(index + 1, Json::String(String::new()));
                     new_path = Some(child_path(&cursor[..cursor.len() - 1], index + 1));
                 }
                 Some((Json::Object(entries), index)) => {
                     let key = unique_key(entries);
-                    entries.insert(index + 1, (key, Json::Null));
+                    entries.insert(index + 1, (key, Json::String(String::new())));
                     new_path = Some(child_path(&cursor[..cursor.len() - 1], index + 1));
                 }
                 _ => {}
@@ -383,36 +389,28 @@ impl JsonEditorState {
 
     /// Returns the editable text of the selected node.
     ///
-    /// Nothing is being edited yet — this is a pure draft for the consumer's
-    /// input widget. Hand the result (possibly modified) to
+    /// Nothing is being edited yet — this is a plain draft for the consumer's
+    /// input widget, in the forgiving form described by [`EditedEntry`]: a
+    /// string's content without quotes, a container's items without the outer
+    /// brackets. Hand the result (possibly modified) to
     /// [`JsonEditorState::commit`], or drop it to change nothing.
     pub fn edit(&self) -> EditedEntry {
         EditedEntry {
             key: entry_key(&self.root, &self.cursor).map(str::to_string),
-            value: self.selected().to_pretty_string(),
+            value: expose_value(self.selected()),
         }
     }
 
     /// Applies an [`EditedEntry`] to the selected node.
     ///
-    /// The text is validated first: the value must parse as JSON (empty text
-    /// means `null`; text that is only missing its closing quote or brackets
-    /// is completed), keys must be single-line and unique among their siblings.
-    /// If anything is wrong, [`EditError`] is returned and the document is
-    /// left untouched.
+    /// The text is interpreted with the forgiving rules of
+    /// [`EditedEntry::value`] (type detection, array/object shorthand, missing
+    /// closers); text that starts like JSON but stays broken is rejected, as
+    /// are multi-line and duplicate keys. If anything is wrong, [`EditError`]
+    /// is returned and the document is left untouched.
     pub fn commit(&mut self, edited: EditedEntry) -> Result<(), EditError> {
         let EditedEntry { key, value } = edited;
-        let value = if value.trim().is_empty() {
-            Json::Null
-        } else {
-            Json::parse(&value)
-                .or_else(|err| {
-                    missing_closers(&value)
-                        .and_then(|closers| Json::parse(&format!("{value}{closers}")).ok())
-                        .ok_or(err)
-                })
-                .map_err(EditError::InvalidJson)?
-        };
+        let value = interpret_value(&value).map_err(EditError::InvalidJson)?;
 
         let path = self.cursor.clone();
         if path.is_empty() {
@@ -615,6 +613,130 @@ fn missing_closers(text: &str) -> Option<String> {
     (!closers.is_empty()).then_some(closers)
 }
 
+/// Strict JSON parsing, completing text that is only missing its closing quote
+/// or brackets.
+fn parse_completing(text: &str) -> Result<Json, ParseError> {
+    Json::parse(text).or_else(|err| {
+        missing_closers(text)
+            .and_then(|closers| Json::parse(&format!("{text}{closers}")).ok())
+            .ok_or(err)
+    })
+}
+
+/// The editable text of a value: see [`EditedEntry::value`].
+fn expose_value(value: &Json) -> String {
+    match value {
+        Json::String(s) => s.clone(),
+        Json::Number(n) => n.to_string(),
+        Json::Bool(b) => b.to_string(),
+        Json::Null => "null".to_string(),
+        Json::Array(items) if items.is_empty() => "[]".to_string(),
+        Json::Object(entries) if entries.is_empty() => "{}".to_string(),
+        Json::Array(items) => items
+            .iter()
+            .map(|item| item.to_compact_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        Json::Object(entries) => entries
+            .iter()
+            .map(|(key, value)| format!("{}: {}", quote_string(key), value.to_compact_string()))
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
+/// Interprets edited value text: see [`EditedEntry::value`]. Strict JSON (with
+/// missing closers completed) wins; comma-separated items become an array, or
+/// an object when every item is a `"key": value` pair; any other bare text
+/// becomes a string. Text that starts like JSON but stays broken is an error.
+fn interpret_value(text: &str) -> Result<Json, ParseError> {
+    let raw_items = split_top_commas(text);
+    if raw_items.len() > 1 {
+        let items: Vec<&str> = raw_items.iter().map(|item| item.trim()).collect();
+        if items.iter().all(|item| split_entry(item).is_some()) {
+            let mut entries = Vec::new();
+            for item in items {
+                let (key, rest) = split_entry(item).unwrap();
+                entries.push((key, interpret_value(rest)?));
+            }
+            return Ok(Json::Object(entries));
+        }
+        let values = items
+            .into_iter()
+            .map(interpret_value)
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(Json::Array(values));
+    }
+    if let Some((key, rest)) = split_entry(text) {
+        return Ok(Json::Object(vec![(key, interpret_value(rest)?)]));
+    }
+    let parsed = parse_completing(text);
+    if parsed.is_ok() || text.trim_start().starts_with(['"', '[', '{']) {
+        return parsed;
+    }
+    Ok(Json::String(text.to_string()))
+}
+
+/// Splits `"key": rest` into its key and the text after the colon. The key
+/// must be a quoted string, so bare text like `https://x` stays a string.
+fn split_entry(text: &str) -> Option<(String, &str)> {
+    let body = text.trim_start();
+    let mut chars = body.char_indices();
+    chars.next()?; // opening quote
+    let mut end = None;
+    let mut escaped = false;
+    for (i, c) in chars {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            end = Some(i);
+            break;
+        }
+    }
+    let end = end?;
+    let key = match Json::parse(&body[..=end]) {
+        Ok(Json::String(key)) => key,
+        _ => return None,
+    };
+    let rest = body[end + 1..].trim_start();
+    Some((key, rest.strip_prefix(':')?))
+}
+
+/// Splits text at commas that sit outside strings and brackets.
+fn split_top_commas(text: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let mut start = 0;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, c) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else {
+            match c {
+                '"' => in_string = true,
+                '[' | '{' => depth += 1,
+                ']' | '}' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => {
+                    items.push(&text[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    items.push(&text[start..]);
+    items
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,19 +762,20 @@ mod tests {
         let state = doc(r#"{"a": [1], "b": null}"#);
         let root = state.edit();
         assert_eq!(root.key, None);
-        assert_eq!(root.value, "{\n  \"a\": [\n    1\n  ],\n  \"b\": null\n}");
+        assert_eq!(root.value, "\"a\": [1], \"b\": null");
 
         let mut state = state;
         state.cursor_down();
         let draft = state.edit();
         assert_eq!(draft.key.as_deref(), Some("a"));
-        assert_eq!(draft.value, "[\n  1\n]");
+        assert_eq!(draft.value, "1", "array items without brackets");
 
         state.cursor_down();
         assert_eq!(state.edit(), entry("1"));
 
         state.cursor_down();
         assert_eq!(state.edit().key.as_deref(), Some("b"));
+        assert_eq!(state.edit().value, "null", "null is the literal text");
     }
 
     #[test]
@@ -671,10 +794,13 @@ mod tests {
     }
 
     #[test]
-    fn commit_treats_empty_text_as_null() {
+    fn empty_text_is_an_empty_string() {
         let mut state = doc(r#"{"a": 1}"#);
         state.cursor_down();
         assert!(state.commit(entry("")).is_ok());
+        assert_eq!(state.root(), &Json::parse(r#"{"a": ""}"#).unwrap());
+
+        assert!(state.commit(entry("null")).is_ok(), "null is the literal text");
         assert_eq!(state.root(), &Json::parse(r#"{"a": null}"#).unwrap());
     }
 
@@ -682,7 +808,7 @@ mod tests {
     fn invalid_text_never_reaches_the_document() {
         let mut state = doc(r#"{"a": 1}"#);
         state.cursor_down();
-        let err = state.commit(entry("oops")).unwrap_err();
+        let err = state.commit(entry("[1,]")).unwrap_err();
         assert!(matches!(err, EditError::InvalidJson(_)));
         assert!(err.to_string().contains("line 1"));
         assert_eq!(state.root(), &Json::parse(r#"{"a": 1}"#).unwrap());
@@ -717,8 +843,52 @@ mod tests {
         assert_eq!(s.root(), &Json::parse(r#"{"a": {}}"#).unwrap());
         assert_valid(&s);
 
-        assert!(s.commit(entry("oops")).is_err(), "other text is still rejected");
-        assert!(s.commit(entry("[1,]")).is_err(), "real errors are still rejected");
+        assert!(s.commit(entry("[1,]")).is_err(), "broken bracketed text is rejected");
+        assert!(s.commit(entry("{\"a\": }")).is_err(), "broken objects are rejected");
+    }
+
+    #[test]
+    fn commit_detects_types_from_bare_text() {
+        for (text, expected) in [
+            ("hello world", r#"{"a": "hello world"}"#),
+            ("42", r#"{"a": 42}"#),
+            ("true", r#"{"a": true}"#),
+            ("\"some\"", r#"{"a": "some"}"#),
+            ("\"some1\", \"some2\"", r#"{"a": ["some1", "some2"]}"#),
+            ("\"x\": true", r#"{"a": {"x": true}}"#),
+            ("1, two", r#"{"a": [1, "two"]}"#),
+            ("https://example.com", r#"{"a": "https://example.com"}"#),
+        ] {
+            let mut s = doc(r#"{"a": null}"#);
+            s.cursor_down();
+            assert!(s.commit(entry(text)).is_ok(), "{text:?}");
+            assert_eq!(s.root(), &Json::parse(expected).unwrap(), "{text:?}");
+            assert_valid(&s);
+        }
+    }
+
+    #[test]
+    fn values_round_trip_through_their_editable_text() {
+        for src in [
+            r#""hello""#,
+            r#""hello world ""#,
+            r#"42"#,
+            r#"1.50"#,
+            r#"true"#,
+            r#"null"#,
+            r#""""#,
+            r#"[]"#,
+            r#"{}"#,
+            r#"["a", "b"]"#,
+            r#"[1, [2, 3]]"#,
+            r#"{"a": 1, "b": [true, null]}"#,
+            r#"{"a": {"b": "x"}}"#,
+        ] {
+            let value = Json::parse(src).unwrap();
+            let text = expose_value(&value);
+            let back = interpret_value(&text).unwrap();
+            assert_eq!(back, value, "src={src} text={text:?}");
+        }
     }
 
     #[test]
@@ -780,7 +950,7 @@ mod tests {
         state.add_entry().unwrap();
         assert_eq!(state.cursor_path(), [0, 0]);
         assert!(state.commit(entry("")).is_ok());
-        assert_eq!(state.root(), &Json::parse(r#"{"a": [null]}"#).unwrap());
+        assert_eq!(state.root(), &Json::parse(r#"{"a": [""]}"#).unwrap());
 
         let mut state = doc("[1, 2, 3]");
         state.cursor_down();

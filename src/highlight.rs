@@ -163,7 +163,7 @@ pub fn lex_line(line: &str) -> Vec<Token> {
                 if crate::json::Number::new(&text).is_some() {
                     TokenKind::Number
                 } else {
-                    TokenKind::Error
+                    TokenKind::String
                 }
             }
             c if c.is_ascii_alphabetic() => {
@@ -173,12 +173,12 @@ pub fn lex_line(line: &str) -> Vec<Token> {
                 match &chars[start..i] {
                     ['t', 'r', 'u', 'e'] | ['f', 'a', 'l', 's', 'e'] => TokenKind::Bool,
                     ['n', 'u', 'l', 'l'] => TokenKind::Null,
-                    _ => TokenKind::Error,
+                    _ => TokenKind::String,
                 }
             }
             _ => {
                 i += 1;
-                TokenKind::Error
+                TokenKind::String
             }
         };
         tokens.push(Token { start, end: i, kind });
@@ -335,11 +335,12 @@ mod tests {
     }
 
     #[test]
-    fn tags_invalid_text_as_error() {
-        assert_eq!(kinds("01")[0].1, TokenKind::Error);
-        assert_eq!(kinds("hello")[0].1, TokenKind::Error);
-        assert_eq!(kinds("\"open")[0].1, TokenKind::Error);
-        assert_eq!(kinds("1.2.3")[0].1, TokenKind::Error);
+    fn bare_text_lexes_as_strings() {
+        assert_eq!(kinds("01")[0].1, TokenKind::String);
+        assert_eq!(kinds("hello")[0].1, TokenKind::String);
+        assert_eq!(kinds("1.2.3")[0].1, TokenKind::String);
+        assert_eq!(kinds("true")[0].1, TokenKind::Bool);
+        assert_eq!(kinds("\"open")[0].1, TokenKind::Error, "unclosed strings stay errors");
     }
 
     #[test]

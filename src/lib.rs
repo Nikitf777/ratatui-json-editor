@@ -28,12 +28,12 @@
 //! // Hand `entry` to your input widget; here we just replace the text.
 //! let mut entry = state.edit();
 //! assert_eq!(entry.value, "0");
-//! entry.value = "\"forty two\"".to_string();
+//! entry.value = "forty two".to_string(); // bare text is detected as a string
 //! assert!(state.commit(entry).is_ok());
 //! assert_eq!(state.root().to_compact_string(), r#"{"answer":"forty two"}"#);
 //!
 //! // Invalid text is rejected and never reaches the document.
-//! let bad = EditedEntry { key: None, value: "oops".to_string() };
+//! let bad = EditedEntry { key: None, value: "[1,]".to_string() };
 //! assert!(state.commit(bad).is_err());
 //! assert_eq!(state.root().to_compact_string(), r#"{"answer":"forty two"}"#);
 //! ```
