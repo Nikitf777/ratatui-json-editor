@@ -26,19 +26,20 @@
 //! Keys in normal mode:
 //!
 //! ```text
-//! j/k or ↓/↑   select line (keeps key/value)   Enter   edit the selected key or value
-//! h/l or ←/→   select key / value field        e / r   edit value / edit key
-//! a            add entry (key first)           d or x  delete entry
-//! J / K        reorder among siblings          PgUp/PgDn scroll
-//! q / Esc      quit
+//! type a char  replace the text and edit     F2          edit with text selected
+//! Enter / Shift+Enter  select down / up     Tab / Shift+Tab  select left / right
+//! j/k or ↓/↑   select down / up             h/l or ←/→  select left / right
+//! e / r        edit value / edit key        a           add entry (key first)
+//! d or x       delete entry                 J / K       reorder among siblings
+//! PgUp/PgDn    scroll                       q / Esc     quit
 //! ```
 //!
 //! Keys in edit mode: plain typing through `ratatui-textarea`, so all of its
 //! operations work (`Ctrl+U` undo, `Ctrl+R` redo, `Ctrl+W` delete word,
 //! `Ctrl+K`/`Ctrl+J` delete to end/start of line, word motions, yank/paste,
-//! ...), plus `Enter` to commit (rejected while the text is not valid JSON),
-//! `Esc` to cancel, and `Tab` / `Shift+Tab` to commit and continue with the
-//! next / previous key or value, like moving between cells in a spreadsheet.
+//! ...), plus `Enter` / `Shift+Enter` to commit and select down / up, `Tab` /
+//! `Shift+Tab` to commit and select left / right (like moving between cells in
+//! a spreadsheet), and `Esc` to cancel. Invalid text is never committed.
 
 use std::io;
 
@@ -161,35 +162,49 @@ impl App {
 
     fn normal_key(&mut self, input: Input) -> bool {
         self.message = None;
-        match (input.key, input.ctrl) {
-            (Key::Char('q') | Key::Esc, false) | (Key::Char('c'), true) => return true,
-            (Key::Char('j') | Key::Down, false) => {
+        match (input.key, input.ctrl, input.alt, input.shift) {
+            (Key::Char('q') | Key::Esc, false, false, _) | (Key::Char('c'), true, _, _) => {
+                return true;
+            }
+            (Key::Char('j') | Key::Down, false, false, _) => {
                 self.state.select_down();
             }
-            (Key::Char('k') | Key::Up, false) => {
+            (Key::Char('k') | Key::Up, false, false, _) => {
                 self.state.select_up();
             }
-            (Key::Char('h') | Key::Left, false) => {
+            (Key::Char('h') | Key::Left, false, false, _) => {
                 self.state.select_left();
             }
-            (Key::Char('l') | Key::Right, false) => {
+            (Key::Char('l') | Key::Right, false, false, _) => {
                 self.state.select_right();
             }
-            (Key::Enter, false) => {
+            (Key::Tab, false, false, false) => {
+                self.state.select_left();
+            }
+            (Key::Tab, false, false, true) => {
+                self.state.select_right();
+            }
+            (Key::Enter, false, false, false) => {
+                self.state.select_down();
+            }
+            (Key::Enter, false, false, true) => {
+                self.state.select_up();
+            }
+            (Key::F(2), false, false, _) => {
                 self.begin_edit();
             }
-            (Key::Char('e'), false) => {
+            (Key::Char('e'), false, false, _) => {
                 self.state.select_value();
                 self.begin_edit();
             }
-            (Key::Char('r'), false) => {
+            (Key::Char('r'), false, false, _) => {
                 if self.state.select_key() {
                     self.begin_edit();
                 } else {
                     self.message = Some("only object entries have a key to edit".to_string());
                 }
             }
-            (Key::Char('a'), false) => {
+            (Key::Char('a'), false, false, _) => {
                 if let Err(err) = self.state.add_entry() {
                     self.message = Some(err.to_string());
                 } else {
@@ -199,25 +214,31 @@ impl App {
                     self.begin_edit();
                 }
             }
-            (Key::Char('d') | Key::Char('x') | Key::Delete, false) => {
+            (Key::Char('d') | Key::Char('x') | Key::Delete, false, false, _) => {
                 let result = self.state.delete_entry();
                 self.report(result);
             }
-            (Key::Char('J'), false) => {
+            (Key::Char('J'), false, false, _) => {
                 let result = self.state.move_entry_down();
                 self.report(result);
             }
-            (Key::Char('K'), false) => {
+            (Key::Char('K'), false, false, _) => {
                 let result = self.state.move_entry_up();
                 self.report(result);
             }
-            (Key::PageDown, false) => {
+            (Key::PageDown, false, false, _) => {
                 let top = self.state.scroll() + self.view_height / 2;
                 self.state.set_scroll(top);
             }
-            (Key::PageUp, false) => {
+            (Key::PageUp, false, false, _) => {
                 let top = self.state.scroll().saturating_sub(self.view_height / 2);
                 self.state.set_scroll(top);
+            }
+            // Type-to-edit, like Excel: any other character starts editing with
+            // an empty text area and is typed into it.
+            (Key::Char(_), false, false, _) => {
+                self.begin_edit_fresh();
+                self.textarea.input(input);
             }
             _ => return false,
         }
@@ -231,12 +252,19 @@ impl App {
         self.message = None;
         match (input.key, input.ctrl, input.alt, input.shift) {
             (Key::Esc, ..) => self.cancel(),
-            (Key::Enter | Key::Char('\n' | '\r'), false, false, false) => match self.commit_edit() {
-                Ok(()) => self.mode = Mode::Normal,
-                Err(err) => self.message = Some(err.to_string()),
-            },
+            (Key::Enter | Key::Char('\n' | '\r'), false, false, false) => {
+                self.commit_and_move(JsonEditorState::select_down);
+            }
+            (Key::Enter | Key::Char('\n' | '\r'), false, false, true) => {
+                self.commit_and_move(JsonEditorState::select_up);
+            }
+            (Key::Tab, false, false, false) => {
+                self.commit_and_move(JsonEditorState::select_left);
+            }
+            (Key::Tab, false, false, true) => {
+                self.commit_and_move(JsonEditorState::select_right);
+            }
             (Key::Enter | Key::Char('\n' | '\r'), ..) => self.textarea.insert_newline(),
-            (Key::Tab, ..) => self.tab_to(!input.shift),
             _ => {
                 self.textarea.input(input);
             }
@@ -244,18 +272,15 @@ impl App {
     }
 
     /// Like moving between cells in a spreadsheet: commit what is typed, then
-    /// continue editing the next (or previous) key or value.
-    fn tab_to(&mut self, forward: bool) {
+    /// move the selection. An invalid commit keeps the buffer open instead.
+    fn commit_and_move(&mut self, move_selection: fn(&mut JsonEditorState) -> bool) {
         if let Err(err) = self.commit_edit() {
             self.message = Some(err.to_string());
             return;
         }
-        if forward {
-            self.state.select_right();
-        } else {
-            self.state.select_left();
-        }
-        self.begin_edit();
+        move_selection(&mut self.state);
+        self.state.ensure_cursor_visible(self.view_height);
+        self.mode = Mode::Normal;
     }
 
     fn report(&mut self, result: Result<(), EditError>) {
@@ -264,15 +289,25 @@ impl App {
         }
     }
 
-    /// Starts editing exactly what is selected; the tree keeps highlighting it.
+    /// Starts editing what is selected with the existing text selected, like
+    /// Excel's F2: typing replaces it and the cursor sits at the end.
     fn begin_edit(&mut self) {
         self.message = None;
         let text = self.state.edit();
         self.textarea = TextArea::from(text.split('\n'));
         self.textarea.set_tab_length(TAB_LEN as u8);
+        self.textarea.select_all();
         self.edit_row = 0;
         self.edit_col = 0;
         self.mode = Mode::Edit;
+    }
+
+    /// Starts editing with an empty text area, like typing over a cell in
+    /// Excel: the typed text replaces the selected field.
+    fn begin_edit_fresh(&mut self) {
+        self.begin_edit();
+        self.textarea = TextArea::default();
+        self.textarea.set_tab_length(TAB_LEN as u8);
     }
 
     /// Commits the buffer to the selected field; the other is untouched.
@@ -490,13 +525,13 @@ fn render_status(app: &App, area: Rect, frame: &mut Frame) {
 fn render_help(app: &App, area: Rect, frame: &mut Frame) {
     let text = match (app.mode, app.state.selected_field()) {
         (Mode::Normal, _) => {
-            " j/k line  h/l field  Enter edit  e edit value  r edit key  a add  d delete  J/K reorder  PgUp/PgDn  q quit "
+            " type to edit  F2 edit  Enter/Tab move  e value  r key  a add  d delete  J/K reorder  PgUp/PgDn  q quit "
         }
         (Mode::Edit, Field::Value) => {
-            " typing JSON text (textarea ops: C-u undo, C-w del word, ...)  Enter commit if valid  Esc cancel  Tab next field "
+            " typing JSON text (textarea ops: C-u undo, C-w del word, ...)  Enter commit+down  Tab commit+left  Shift goes back  Esc cancel "
         }
         (Mode::Edit, Field::Key) => {
-            " typing plain key text (textarea ops: C-u undo, C-w del word, ...)  Enter commit  Esc cancel  Tab next field "
+            " typing plain key text (textarea ops: C-u undo, C-w del word, ...)  Enter commit+down  Tab commit+left  Shift goes back  Esc cancel "
         }
     };
     frame.render_widget(

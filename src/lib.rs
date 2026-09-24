@@ -24,7 +24,7 @@
 //! use ratatui_json_editor::JsonEditorState;
 //!
 //! let mut state = JsonEditorState::parse(r#"{"answer": 0}"#).unwrap();
-//! state.cursor_down(); // select root["answer"] (values are selected by default)
+//! state.select_down(); // select root["answer"] (values are selected by default)
 //!
 //! // Hand `state.edit()` to your input widget; here we just replace the text.
 //! assert_eq!(state.edit(), "0");
