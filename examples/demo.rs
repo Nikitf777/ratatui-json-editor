@@ -24,7 +24,7 @@
 //! ```text
 //! j/k or ↓/↑   select line (keeps key/value)   Enter   edit the selected key or value
 //! h/l or ←/→   select key / value field        e / r   edit value / edit key
-//! a            add entry                       d or x  delete entry
+//! a            add entry (key first)           d or x  delete entry
 //! J / K        reorder among siblings          PgUp/PgDn scroll
 //! q / Esc      quit
 //! ```
@@ -195,6 +195,9 @@ impl App {
                 if let Err(err) = self.state.add_entry() {
                     self.message = Some(err.to_string());
                 } else {
+                    // New properties are named first; array elements have no
+                    // key, so `select_key` leaves their value selected.
+                    self.state.select_key();
                     self.begin_edit(true);
                 }
             }
