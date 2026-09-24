@@ -130,13 +130,13 @@ impl JsonEditorState {
 
     /// Moves the cursor to the previous node in pre-order. Returns whether it
     /// moved.
-    pub fn cursor_up(&mut self) -> bool {
+    pub fn select_up(&mut self) -> bool {
         self.move_cursor(-1)
     }
 
     /// Moves the cursor to the next node in pre-order. Returns whether it
     /// moved.
-    pub fn cursor_down(&mut self) -> bool {
+    pub fn select_down(&mut self) -> bool {
         self.move_cursor(1)
     }
 
@@ -733,16 +733,16 @@ mod tests {
         let mut state = doc(r#"{"a": [1], "b": null}"#);
         assert_eq!(state.edit(), "\"a\": [1], \"b\": null", "root value");
 
-        state.cursor_down();
+        state.select_down();
         assert!(state.select_key());
         assert_eq!(state.edit(), "a");
         assert!(state.select_value());
         assert_eq!(state.edit(), "1", "array items without brackets");
 
-        state.cursor_down();
+        state.select_down();
         assert_eq!(state.edit(), "1");
 
-        state.cursor_down();
+        state.select_down();
         assert!(state.select_key());
         assert_eq!(state.edit(), "b");
         assert!(state.select_value());
@@ -752,7 +752,7 @@ mod tests {
     #[test]
     fn commit_replaces_values_and_converts_types() {
         let mut state = doc(r#"{"a": 1}"#);
-        state.cursor_down();
+        state.select_down();
         assert!(state.commit(entry("\"hi\"")).is_ok());
         assert_eq!(state.root(), &Json::parse(r#"{"a": "hi"}"#).unwrap());
 
@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn empty_text_is_an_empty_string() {
         let mut state = doc(r#"{"a": 1}"#);
-        state.cursor_down();
+        state.select_down();
         assert!(state.commit(entry("")).is_ok());
         assert_eq!(state.root(), &Json::parse(r#"{"a": ""}"#).unwrap());
 
@@ -778,7 +778,7 @@ mod tests {
     #[test]
     fn invalid_text_never_reaches_the_document() {
         let mut state = doc(r#"{"a": 1}"#);
-        state.cursor_down();
+        state.select_down();
         let err = state.commit(entry("[1,]")).unwrap_err();
         assert!(matches!(err, EditError::InvalidJson(_)));
         assert!(err.to_string().contains("line 1"));
@@ -789,27 +789,27 @@ mod tests {
     #[test]
     fn commit_completes_unclosed_values() {
         let mut s = doc(r#"{"a": 1}"#);
-        s.cursor_down();
+        s.select_down();
         assert!(s.commit(entry("\"some words ")).is_ok(), "missing closing quote");
         assert_eq!(s.root(), &Json::parse(r#"{"a": "some words "}"#).unwrap());
 
         let mut s = doc(r#"{"a": 1}"#);
-        s.cursor_down();
+        s.select_down();
         assert!(s.commit(entry("\"")).is_ok(), "a lone quote means empty string");
         assert_eq!(s.root(), &Json::parse(r#"{"a": ""}"#).unwrap());
 
         let mut s = doc(r#"{"a": 1}"#);
-        s.cursor_down();
+        s.select_down();
         assert!(s.commit(entry("[1, 2")).is_ok(), "missing closing bracket");
         assert_eq!(s.root(), &Json::parse(r#"{"a": [1, 2]}"#).unwrap());
 
         let mut s = doc(r#"{"a": 1}"#);
-        s.cursor_down();
+        s.select_down();
         assert!(s.commit(entry("{\"x\": [9")).is_ok(), "missing several closers");
         assert_eq!(s.root(), &Json::parse(r#"{"a": {"x": [9]}}"#).unwrap());
 
         let mut s = doc(r#"{"a": 1}"#);
-        s.cursor_down();
+        s.select_down();
         assert!(s.commit(entry("{")).is_ok(), "a lone brace means empty object");
         assert_eq!(s.root(), &Json::parse(r#"{"a": {}}"#).unwrap());
         assert_valid(&s);
@@ -831,7 +831,7 @@ mod tests {
             ("https://example.com", r#"{"a": "https://example.com"}"#),
         ] {
             let mut s = doc(r#"{"a": null}"#);
-            s.cursor_down();
+            s.select_down();
             assert!(s.commit(entry(text)).is_ok(), "{text:?}");
             assert_eq!(s.root(), &Json::parse(expected).unwrap(), "{text:?}");
             assert_valid(&s);
@@ -874,7 +874,7 @@ mod tests {
     #[test]
     fn commit_renames_and_checks_keys() {
         let mut state = doc(r#"{"a": 1, "b": 2}"#);
-        state.cursor_down();
+        state.select_down();
         assert!(state.select_key());
         assert!(state.commit("c").is_ok());
         assert_eq!(state.root(), &Json::parse(r#"{"c": 1, "b": 2}"#).unwrap());
@@ -887,7 +887,7 @@ mod tests {
     #[test]
     fn committing_one_field_never_touches_the_other() {
         let mut state = doc(r#"{"a": 1}"#);
-        state.cursor_down();
+        state.select_down();
         assert!(state.commit("2").is_ok(), "value commit keeps the key");
         assert_eq!(state.root(), &Json::parse(r#"{"a": 2}"#).unwrap());
 
@@ -900,15 +900,15 @@ mod tests {
     #[test]
     fn add_delete_and_reorder() {
         let mut state = doc(r#"{"a": []}"#);
-        state.cursor_down();
+        state.select_down();
         state.add_entry().unwrap();
         assert_eq!(state.cursor_path(), [0, 0]);
         assert!(state.commit(entry("")).is_ok());
         assert_eq!(state.root(), &Json::parse(r#"{"a": [""]}"#).unwrap());
 
         let mut state = doc("[1, 2, 3]");
-        state.cursor_down();
-        state.cursor_down();
+        state.select_down();
+        state.select_down();
         state.move_entry_down().unwrap();
         assert_eq!(state.root(), &Json::parse("[1, 3, 2]").unwrap());
         assert_eq!(state.cursor_path(), [2]);
@@ -937,7 +937,7 @@ mod tests {
         assert!(state.add_entry().is_err());
 
         let mut state = doc("[1]");
-        state.cursor_down();
+        state.select_down();
         assert_eq!(
             state.move_entry_down(),
             Err(EditError::Refused("already the last entry"))
@@ -948,9 +948,9 @@ mod tests {
     fn navigation_follows_preorder() {
         let mut state = doc(r#"{"a": {"b": [1]}}"#);
         assert_eq!(state.path_string(), "root");
-        state.cursor_down();
+        state.select_down();
         assert_eq!(state.path_string(), "root[\"a\"]");
-        state.cursor_down();
+        state.select_down();
         assert_eq!(state.path_string(), "root[\"a\"][\"b\"]");
         state.cursor_to_first_child();
         assert_eq!(state.path_string(), "root[\"a\"][\"b\"][0]");
@@ -958,9 +958,9 @@ mod tests {
         state.cursor_to_parent();
         state.cursor_to_parent();
         assert_eq!(state.path_string(), "root[\"a\"]");
-        state.cursor_up();
+        state.select_up();
         assert_eq!(state.path_string(), "root");
-        assert!(!state.cursor_up(), "already at the top");
+        assert!(!state.select_up(), "already at the top");
     }
 
     #[test]
@@ -968,9 +968,9 @@ mod tests {
         let mut state = doc(r#"{"a": [1, 2]}"#);
         assert_eq!(state.line_count(), 6);
         assert_eq!(state.cursor_line(), 0);
-        state.cursor_down();
+        state.select_down();
         assert_eq!(state.cursor_line(), 1);
-        state.cursor_down();
+        state.select_down();
         assert_eq!(state.cursor_line(), 2);
 
         state.set_scroll(2);
@@ -988,7 +988,7 @@ mod tests {
     #[test]
     fn select_key_and_value() {
         let mut s = doc(r#"{"a": 1}"#);
-        s.cursor_down();
+        s.select_down();
         assert_eq!(s.selected_field(), Field::Value);
         assert!(s.select_key());
         assert_eq!(s.selected_field(), Field::Key);
@@ -997,7 +997,7 @@ mod tests {
         assert_eq!(s.selected_field(), Field::Value);
 
         let mut s = doc("[1]");
-        s.cursor_down();
+        s.select_down();
         assert!(!s.select_key(), "array elements have no key");
         assert_eq!(s.selected_field(), Field::Value);
 
@@ -1008,7 +1008,7 @@ mod tests {
     #[test]
     fn select_left_and_right_stay_on_the_level() {
         let mut s = doc(r#"{"a": {"x": 1}, "b": 2}"#);
-        s.cursor_down();
+        s.select_down();
         assert!(s.select_key());
         assert_eq!(s.cursor_path(), [0]);
 
@@ -1041,7 +1041,7 @@ mod tests {
     #[test]
     fn arrays_select_values_across_lines() {
         let mut s = doc("[1, 2]");
-        s.cursor_down();
+        s.select_down();
         assert!(!s.select_key());
         assert!(s.select_right(), "value -> value of the next line");
         assert_eq!(s.cursor_path(), [1]);
@@ -1054,14 +1054,14 @@ mod tests {
     #[test]
     fn moving_between_lines_keeps_the_field() {
         let mut s = doc(r#"{"a": 1, "b": 2}"#);
-        s.cursor_down();
+        s.select_down();
         assert!(s.select_key());
-        s.cursor_down();
+        s.select_down();
         assert_eq!(s.cursor_path(), [1]);
         assert_eq!(s.selected_field(), Field::Key, "field follows the selection");
-        s.cursor_up();
+        s.select_up();
         assert_eq!(s.selected_field(), Field::Key);
-        s.cursor_up();
+        s.select_up();
         assert_eq!(s.cursor_path(), Vec::<usize>::new());
         assert_eq!(s.selected_field(), Field::Value, "clamped where no key exists");
     }
@@ -1069,7 +1069,7 @@ mod tests {
     #[test]
     fn operations_keep_the_document_valid() {
         let mut state = doc(r#"{"a": [1, 2], "b": null}"#);
-        state.cursor_down();
+        state.select_down();
         state.add_entry().unwrap();
         assert_valid(&state);
         state.commit(entry("\"x\"")).unwrap();

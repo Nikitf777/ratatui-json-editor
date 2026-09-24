@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn highlights_the_selected_field() {
         let mut state = JsonEditorState::parse(r#"{"a": 1}"#).unwrap();
-        state.cursor_down();
+        state.select_down();
         let theme = Theme::default();
 
         state.select_key();
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn highlights_the_whole_container_value() {
         let mut state = JsonEditorState::parse(r#"{"a": [1, 2], "b": 3}"#).unwrap();
-        state.cursor_down();
+        state.select_down();
         assert!(state.select_value());
         let buf = render(&mut state, 30, 8);
         let theme = Theme::default();
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn highlights_the_cursor_row() {
         let mut state = JsonEditorState::parse(r#"{"a": 1, "b": 2}"#).unwrap();
-        state.cursor_down();
+        state.select_down();
         let buf = render(&mut state, 30, 5);
         let theme = Theme::default();
         assert_eq!(buf[(0, 1)].style().bg, theme.cursor_line.bg);
@@ -323,7 +323,7 @@ mod tests {
     fn follow_cursor_scrolls_the_state() {
         let mut state = JsonEditorState::parse("[1, 2, 3, 4, 5]").unwrap();
         for _ in 0..3 {
-            state.cursor_down();
+            state.select_down();
         }
         let _ = render(&mut state, 30, 3);
         assert_eq!(state.cursor_line(), 3);

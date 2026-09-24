@@ -164,10 +164,10 @@ impl App {
         match (input.key, input.ctrl) {
             (Key::Char('q') | Key::Esc, false) | (Key::Char('c'), true) => return true,
             (Key::Char('j') | Key::Down, false) => {
-                self.state.cursor_down();
+                self.state.select_down();
             }
             (Key::Char('k') | Key::Up, false) => {
-                self.state.cursor_up();
+                self.state.select_up();
             }
             (Key::Char('h') | Key::Left, false) => {
                 self.state.select_left();
