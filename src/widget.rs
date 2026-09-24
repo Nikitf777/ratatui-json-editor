@@ -87,29 +87,81 @@ impl StatefulWidget for &JsonEditor {
         let top = state.scroll().min(rows.len().saturating_sub(height));
         state.set_scroll(top);
         let cursor_line = state.cursor_line();
+        let value_block = selected_value_block(&rows, cursor_line, state);
 
         for (i, row) in rows.iter().skip(top).take(height).enumerate() {
+            let index = top + i;
             let rect = Rect::new(area.x, area.y + i as u16, area.width, 1);
-            let is_cursor = top + i == cursor_line;
-            if is_cursor {
+            if index == cursor_line {
                 buf.set_style(rect, self.theme.cursor_line);
             }
-            let selected = is_cursor.then(|| state.selected_field());
+            let highlight = match value_block {
+                Some((start, _)) if index == start => Highlight::Value,
+                Some((_, end)) if index == end => Highlight::Close,
+                Some((start, end)) if index > start && index < end => Highlight::Whole,
+                _ if index == cursor_line => match state.selected_field() {
+                    Field::Key => Highlight::Key,
+                    Field::Value => Highlight::Value,
+                },
+                _ => Highlight::None,
+            };
             buf.set_line(
                 area.x,
                 rect.y,
-                &Line::from(render_row(row, &self.theme, selected)),
+                &Line::from(render_row(row, &self.theme, highlight)),
                 area.width,
             );
         }
     }
 }
 
-fn render_row(row: &Row, theme: &Theme, selected: Option<Field>) -> Vec<Span<'static>> {
-    let key_on = selected == Some(Field::Key);
-    let value_on = selected == Some(Field::Value);
-    let field = |style: Style, on: bool| if on { style.patch(theme.selection) } else { style };
-    let mut spans = vec![Span::raw("  ".repeat(row.depth))];
+/// How much of a row the selection covers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Highlight {
+    /// Nothing is selected on this row.
+    None,
+    /// The key text on the cursor line.
+    Key,
+    /// The value on the cursor line: a scalar, `{}` / `[]`, or the open bracket
+    /// of a container whose block is selected.
+    Value,
+    /// A whole row inside a selected container's block.
+    Whole,
+    /// The closing bracket row at the end of a selected container's block.
+    Close,
+}
+
+/// The row range of the selected container value: from its open bracket row to
+/// its closing bracket row.
+fn selected_value_block(
+    rows: &[Row],
+    cursor_line: usize,
+    state: &JsonEditorState,
+) -> Option<(usize, usize)> {
+    if state.selected_field() != Field::Value {
+        return None;
+    }
+    let row = rows.get(cursor_line)?;
+    if !matches!(&row.content, RowContent::Container { empty: false, .. }) {
+        return None;
+    }
+    let depth = row.depth;
+    let end = rows[cursor_line + 1..]
+        .iter()
+        .position(|r| matches!(&r.content, RowContent::Close { .. }) && r.depth == depth)?
+        + cursor_line
+        + 1;
+    Some((cursor_line, end))
+}
+
+fn render_row(row: &Row, theme: &Theme, highlight: Highlight) -> Vec<Span<'static>> {
+    let whole = highlight == Highlight::Whole;
+    let key_on = whole || highlight == Highlight::Key;
+    let value_on = whole || highlight == Highlight::Value;
+    let mut spans = vec![Span::styled(
+        "  ".repeat(row.depth),
+        patch(Style::default(), whole, theme),
+    )];
     match &row.content {
         RowContent::Container {
             key,
@@ -117,46 +169,53 @@ fn render_row(row: &Row, theme: &Theme, selected: Option<Field>) -> Vec<Span<'st
             empty,
         } => {
             if let Some(key) = key {
-                push_key(&mut spans, key, theme, key_on);
+                push_key(&mut spans, key, theme, key_on, whole);
             }
             let (open, close) = if *is_object { ("{", "}") } else { ("[", "]") };
             if *empty {
                 spans.push(Span::styled(
                     format!("{open}{close}"),
-                    field(theme.punct, value_on),
+                    patch(theme.punct, value_on, theme),
                 ));
-                push_comma(&mut spans, row.comma, theme);
+                push_comma(&mut spans, row.comma, theme, whole);
             } else {
-                spans.push(Span::styled(open, field(theme.punct, value_on)));
+                spans.push(Span::styled(open, patch(theme.punct, value_on, theme)));
             }
         }
         RowContent::Scalar { key, value } => {
             if let Some(key) = key {
-                push_key(&mut spans, key, theme, key_on);
+                push_key(&mut spans, key, theme, key_on, whole);
             }
             spans.push(scalar_span(value, theme, value_on));
-            push_comma(&mut spans, row.comma, theme);
+            push_comma(&mut spans, row.comma, theme, whole);
         }
         RowContent::Close { is_object } => {
+            let close_on = whole || highlight == Highlight::Close;
             spans.push(Span::styled(
                 if *is_object { "}" } else { "]" },
-                theme.punct,
+                patch(theme.punct, close_on, theme),
             ));
-            push_comma(&mut spans, row.comma, theme);
+            push_comma(&mut spans, row.comma, theme, whole);
         }
     }
     spans
 }
 
-fn push_key(spans: &mut Vec<Span<'static>>, key: &str, theme: &Theme, selected: bool) {
-    let style = if selected {
-        theme.key.patch(theme.selection)
+fn patch(style: Style, on: bool, theme: &Theme) -> Style {
+    if on {
+        style.patch(theme.selection)
     } else {
-        theme.key
-    };
-    spans.push(Span::styled(quote_string(key), style));
-    spans.push(Span::styled(":", theme.punct));
-    spans.push(Span::raw(" "));
+        style
+    }
+}
+
+fn push_key(spans: &mut Vec<Span<'static>>, key: &str, theme: &Theme, key_on: bool, rest_on: bool) {
+    spans.push(Span::styled(
+        quote_string(key),
+        patch(theme.key, key_on, theme),
+    ));
+    spans.push(Span::styled(":", patch(theme.punct, rest_on, theme)));
+    spans.push(Span::styled(" ", patch(Style::default(), rest_on, theme)));
 }
 
 fn scalar_span(value: &Json, theme: &Theme, selected: bool) -> Span<'static> {
@@ -166,17 +225,12 @@ fn scalar_span(value: &Json, theme: &Theme, selected: bool) -> Span<'static> {
         Json::Bool(b) => (b.to_string(), theme.boolean),
         _ => ("null".to_string(), theme.null),
     };
-    let style = if selected {
-        style.patch(theme.selection)
-    } else {
-        style
-    };
-    Span::styled(text, style)
+    Span::styled(text, patch(style, selected, theme))
 }
 
-fn push_comma(spans: &mut Vec<Span<'static>>, comma: bool, theme: &Theme) {
+fn push_comma(spans: &mut Vec<Span<'static>>, comma: bool, theme: &Theme, on: bool) {
     if comma {
-        spans.push(Span::styled(",", theme.punct));
+        spans.push(Span::styled(",", patch(theme.punct, on, theme)));
     }
 }
 
@@ -226,6 +280,33 @@ mod tests {
         let buf = render(&mut state, 30, 5);
         assert_eq!(buf[(7, 1)].style().bg, theme.selection.bg, "value highlighted");
         assert_ne!(buf[(3, 1)].style().bg, theme.selection.bg);
+    }
+
+    #[test]
+    fn highlights_the_whole_container_value() {
+        let mut state = JsonEditorState::parse(r#"{"a": [1, 2], "b": 3}"#).unwrap();
+        state.cursor_down();
+        assert!(state.select_value());
+        let buf = render(&mut state, 30, 8);
+        let theme = Theme::default();
+        let sel = theme.selection.bg;
+
+        // Row 1 is `  "a": [` — the key stays out, the block starts at `[`.
+        assert_ne!(buf[(3, 1)].style().bg, sel, "key is not part of the value");
+        assert_eq!(buf[(7, 1)].style().bg, sel, "open bracket highlighted");
+
+        // Rows 2 and 3 are the array's elements — fully highlighted.
+        assert_eq!(buf[(0, 2)].style().bg, sel, "inner rows highlighted");
+        assert_eq!(buf[(4, 2)].style().bg, sel);
+        assert_eq!(buf[(4, 3)].style().bg, sel);
+
+        // Row 4 is `  ]` — the block ends at the close bracket.
+        assert_eq!(buf[(2, 4)].style().bg, sel, "close bracket highlighted");
+        assert_ne!(buf[(0, 4)].style().bg, sel, "outside the brackets");
+
+        // Row 5 is `  "b": 3` — outside the block.
+        assert_ne!(buf[(3, 5)].style().bg, sel);
+        assert_ne!(buf[(7, 5)].style().bg, sel);
     }
 
     #[test]
