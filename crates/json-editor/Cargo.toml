@@ -1,0 +1,13 @@
+[package]
+name = "json-editor"
+version = "0.1.0"
+edition = "2024"
+description = "A terminal JSON editor that always produces valid JSON"
+license = "MIT"
+
+[dependencies]
+ratatui-json-editor = { path = "../ratatui-json-editor" }
+ratatui = "0.30"
+ratatui-textarea = "0.9"
+tui-scrollbar = "0.2"
+unicode-width = "0.2"

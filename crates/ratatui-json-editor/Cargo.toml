@@ -1,0 +1,18 @@
+[package]
+name = "ratatui-json-editor"
+version = "0.1.0"
+edition = "2024"
+description = "A JSON editor widget for ratatui that always produces valid JSON"
+license = "MIT"
+
+[dependencies]
+ratatui-core = "0.1"
+unicode-width = "0.2"
+
+[dev-dependencies]
+ratatui = "0.30"
+ratatui-textarea = "0.9"
+tui-scrollbar = "0.2"
+
+[[example]]
+name = "demo"
