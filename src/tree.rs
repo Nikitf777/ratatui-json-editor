@@ -7,6 +7,9 @@
 
 use crate::json::Json;
 
+/// Display width of one indentation level in the rendered tree.
+pub(crate) const INDENT_WIDTH: usize = 2;
+
 /// One rendered row of the tree.
 pub(crate) struct Row {
     /// Index path of the node this row belongs to; `None` for closing rows.

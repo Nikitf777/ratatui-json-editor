@@ -20,7 +20,8 @@
 //! construction.
 
 use crate::json::{quote_string, Json, ParseError};
-use crate::tree::flatten;
+use crate::tree::{flatten, RowContent, INDENT_WIDTH};
+use unicode_width::UnicodeWidthStr;
 
 /// Why an editing operation was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -157,6 +158,39 @@ impl JsonEditorState {
         } else {
             false
         }
+    }
+
+    /// Selects what a pointer hit: the node on tree `row` and the key or value
+    /// covering display column `col` of that row.
+    ///
+    /// Rows are document rows as counted by [`Self::line_count`] — subtract
+    /// [`Self::scroll`] from a screen row. The column layout is the rendered
+    /// one: two spaces of indent per level, then `"key": value`, so a click on
+    /// the key selects the key and anywhere else selects the value. Closing
+    /// bracket rows select nothing and return `false`.
+    pub fn select_at(&mut self, row: usize, col: usize) -> bool {
+        let rows = flatten(&self.root);
+        let Some(target) = rows.get(row) else {
+            return false;
+        };
+        let Some(path) = target.path.clone() else {
+            return false;
+        };
+        self.cursor = path;
+        let key = match &target.content {
+            RowContent::Container { key, .. } | RowContent::Scalar { key, .. } => key.as_deref(),
+            RowContent::Close { .. } => None,
+        };
+        self.field = match key {
+            Some(key)
+                if col < target.depth * INDENT_WIDTH + quote_string(key).width() + 2 =>
+            {
+                Field::Key
+            }
+            _ => Field::Value,
+        };
+        self.clamp_field();
+        true
     }
 
     /// The key or value currently selected on the cursor line.
@@ -991,6 +1025,30 @@ mod tests {
         assert_eq!(state.scroll(), 1, "minimal scroll to show the cursor");
         state.ensure_cursor_visible(10);
         assert_eq!(state.scroll(), 1, "already visible");
+    }
+
+    #[test]
+    fn select_at_picks_the_node_and_field_under_a_pointer() {
+        // Rows: 0 `{`, 1 `  "a": [`, 2 `    1`, 3 `  ]`, 4 `  "b": 2`, 5 `}`.
+        let mut s = doc(r#"{"a": [1], "b": 2}"#);
+        assert!(!s.select_at(3, 2), "closing rows select nothing");
+        assert_eq!(s.cursor_path(), Vec::<usize>::new());
+
+        assert!(s.select_at(1, 3), "on the key");
+        assert_eq!(s.cursor_path(), [0]);
+        assert_eq!(s.selected_field(), Field::Key);
+
+        assert!(s.select_at(1, 7), "on the value");
+        assert_eq!(s.cursor_path(), [0]);
+        assert_eq!(s.selected_field(), Field::Value);
+
+        assert!(s.select_at(2, 5), "array element");
+        assert_eq!(s.cursor_path(), [0, 0]);
+        assert_eq!(s.selected_field(), Field::Value);
+
+        assert!(s.select_at(4, 2), "later entry");
+        assert_eq!(s.cursor_path(), [1]);
+        assert_eq!(s.selected_field(), Field::Key);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use ratatui_core::widgets::StatefulWidget;
 use crate::highlight::Theme;
 use crate::json::{quote_string, Json};
 use crate::state::{Field, JsonEditorState};
-use crate::tree::{flatten, Row, RowContent};
+use crate::tree::{flatten, Row, RowContent, INDENT_WIDTH};
 
 /// Who scrolls the tree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -159,7 +159,7 @@ fn render_row(row: &Row, theme: &Theme, highlight: Highlight) -> Vec<Span<'stati
     let key_on = whole || highlight == Highlight::Key;
     let value_on = whole || highlight == Highlight::Value;
     let mut spans = vec![Span::styled(
-        "  ".repeat(row.depth),
+        " ".repeat(INDENT_WIDTH * row.depth),
         patch(Style::default(), whole, theme),
     )];
     match &row.content {

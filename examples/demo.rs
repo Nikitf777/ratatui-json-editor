@@ -23,6 +23,10 @@
 //! it loads the given file. On exit the (always valid) JSON is printed to
 //! stdout.
 //!
+//! Mouse: click in the tree to select the key or value under the pointer,
+//! click the input line to place the text cursor, wheel to scroll, and the
+//! scrollbar handles clicks, arrows and thumb drags.
+//!
 //! Keys in normal mode:
 //!
 //! ```text
@@ -44,7 +48,8 @@
 use std::io;
 
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -56,8 +61,11 @@ use ratatui_json_editor::{
     clip_spans, highlight_json, overlay, quote_string, runs_to_spans, styled_runs, EditError, Field,
     Json, JsonEditor, JsonEditorState, Run, ScrollMode, Theme,
 };
-use ratatui_textarea::{DataCursor, Input, Key, TextArea};
-use tui_scrollbar::{GlyphSet, ScrollBar, ScrollBarArrows, ScrollLengths};
+use ratatui_textarea::{CursorMove, DataCursor, Input, Key, TextArea};
+use tui_scrollbar::{
+    GlyphSet, PointerButton, PointerEvent, PointerEventKind, ScrollAxis, ScrollBar, ScrollBarArrows,
+    ScrollBarInteraction, ScrollCommand, ScrollEvent, ScrollLengths, ScrollWheel,
+};
 
 const SAMPLE: &str = r#"{
   "name": "ratatui-json-editor",
@@ -93,9 +101,9 @@ fn main() -> io::Result<()> {
 }
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
-    execute!(io::stdout(), EnableBracketedPaste)?;
+    execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
     let result = event_loop(terminal, app);
-    execute!(io::stdout(), DisableBracketedPaste)?;
+    execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture)?;
     result
 }
 
@@ -111,6 +119,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
             Event::Paste(text) if app.mode == Mode::Edit => {
                 app.textarea.insert_str(&text);
             }
+            Event::Mouse(mouse) => app.handle_mouse(mouse),
             _ => {}
         }
     }
@@ -133,6 +142,10 @@ struct App {
     view_height: usize,
     edit_row: usize,
     edit_col: usize,
+    input_rect: Rect,
+    tree_rect: Rect,
+    scrollbar_rect: Rect,
+    scrollbar_interaction: ScrollBarInteraction,
 }
 
 impl App {
@@ -146,6 +159,10 @@ impl App {
             view_height: 1,
             edit_row: 0,
             edit_col: 0,
+            input_rect: Rect::default(),
+            tree_rect: Rect::default(),
+            scrollbar_rect: Rect::default(),
+            scrollbar_interaction: ScrollBarInteraction::new(),
         }
     }
 
@@ -324,6 +341,62 @@ impl App {
         self.mode = Mode::Normal;
         self.message = None;
     }
+
+    /// Mouse: the scrollbar owns its area (clicks, arrows, thumb drags);
+    /// clicks select in the tree (key vs value by position) and in the input
+    /// line (which places the text cursor); the wheel scrolls the tree.
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        let scrollbar = scrollbar(
+            self.state.line_count(),
+            self.tree_rect.height as usize,
+            self.state.scroll(),
+        );
+        if let Some(event) = scroll_event(mouse)
+            && let Some(ScrollCommand::SetOffset(offset)) =
+                scrollbar.handle_event(self.scrollbar_rect, event, &mut self.scrollbar_interaction)
+        {
+            self.state.set_scroll(offset);
+            return;
+        }
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if inside(self.tree_rect, mouse) {
+                    let row = self.state.scroll() + (mouse.row - self.tree_rect.y) as usize;
+                    let col = (mouse.column - self.tree_rect.x) as usize;
+                    if self.state.select_at(row, col) {
+                        self.state.ensure_cursor_visible(self.view_height);
+                    }
+                } else if inside(self.input_rect, mouse) {
+                    self.place_text_cursor(mouse);
+                }
+            }
+            MouseEventKind::ScrollDown if inside(self.tree_rect, mouse) => {
+                let top = self.state.scroll() + 3;
+                self.state.set_scroll(top);
+            }
+            MouseEventKind::ScrollUp if inside(self.tree_rect, mouse) => {
+                let top = self.state.scroll().saturating_sub(3);
+                self.state.set_scroll(top);
+            }
+            _ => {}
+        }
+    }
+
+    /// Clicking the input line starts editing and puts the text cursor under
+    /// the pointer.
+    fn place_text_cursor(&mut self, mouse: MouseEvent) {
+        if self.mode != Mode::Edit {
+            self.begin_edit();
+        }
+        let row = (self.edit_row + (mouse.row - self.input_rect.y) as usize)
+            .min(self.textarea.lines().len() - 1);
+        let col = (mouse.column - self.input_rect.x) as usize;
+        let line = self.textarea.lines()[row].clone();
+        self.textarea.cancel_selection();
+        self.textarea
+            .move_cursor(CursorMove::Jump(row as u16, char_at(&line, col) as u16));
+    }
 }
 
 // -- rendering --------------------------------------------------------------
@@ -353,19 +426,19 @@ fn render_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let [tree_area, bar_area] =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
     app.view_height = tree_area.height as usize;
+    app.tree_rect = tree_area;
+    app.scrollbar_rect = bar_area;
 
     let widget = JsonEditor::new()
         .theme(app.theme.clone())
         .scroll_mode(ScrollMode::Manual);
     frame.render_stateful_widget(&widget, tree_area, &mut app.state);
 
-    let scrollbar = ScrollBar::vertical(ScrollLengths {
-        content_len: app.state.line_count(),
-        viewport_len: tree_area.height as usize,
-    })
-    .offset(app.state.scroll())
-    .arrows(ScrollBarArrows::Both)
-    .glyph_set(GlyphSet::box_drawing());
+    let scrollbar = scrollbar(
+        app.state.line_count(),
+        tree_area.height as usize,
+        app.state.scroll(),
+    );
     frame.render_widget(&scrollbar, bar_area);
 }
 
@@ -391,6 +464,7 @@ fn render_input_line(frame: &mut Frame, app: &mut App, area: Rect) {
         .border_style(app.theme.popup);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    app.input_rect = inner;
 
     if app.mode == Mode::Edit {
         render_input(frame, app, inner);
@@ -501,6 +575,72 @@ fn display_width(text: &str) -> usize {
             }
         })
         .sum()
+}
+
+fn scrollbar(content_len: usize, viewport_len: usize, offset: usize) -> ScrollBar {
+    ScrollBar::vertical(ScrollLengths {
+        content_len,
+        viewport_len,
+    })
+    .offset(offset)
+    .arrows(ScrollBarArrows::Both)
+    .glyph_set(GlyphSet::box_drawing())
+}
+
+/// Converts a crossterm mouse event into the scrollbar's backend-agnostic
+/// input, so no crossterm feature of `tui-scrollbar` is needed.
+fn scroll_event(mouse: MouseEvent) -> Option<ScrollEvent> {
+    let pointer = |kind| {
+        ScrollEvent::Pointer(PointerEvent {
+            column: mouse.column,
+            row: mouse.row,
+            kind,
+            button: PointerButton::Primary,
+        })
+    };
+    let event = match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => pointer(PointerEventKind::Down),
+        MouseEventKind::Drag(MouseButton::Left) => pointer(PointerEventKind::Drag),
+        MouseEventKind::Up(MouseButton::Left) => pointer(PointerEventKind::Up),
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+            let delta = if mouse.kind == MouseEventKind::ScrollDown {
+                1
+            } else {
+                -1
+            };
+            ScrollEvent::ScrollWheel(ScrollWheel {
+                axis: ScrollAxis::Vertical,
+                delta,
+                column: mouse.column,
+                row: mouse.row,
+            })
+        }
+        _ => return None,
+    };
+    Some(event)
+}
+
+fn inside(rect: Rect, mouse: MouseEvent) -> bool {
+    mouse.column >= rect.x
+        && mouse.column < rect.x + rect.width
+        && mouse.row >= rect.y
+        && mouse.row < rect.y + rect.height
+}
+
+/// The character index at display column `col` of `text`.
+fn char_at(text: &str, col: usize) -> usize {
+    let mut width = 0;
+    for (i, c) in text.chars().enumerate() {
+        if width >= col {
+            return i;
+        }
+        width += if c == '\t' {
+            TAB_LEN
+        } else {
+            unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
+        };
+    }
+    text.chars().count()
 }
 
 fn render_status(app: &App, area: Rect, frame: &mut Frame) {
