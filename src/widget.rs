@@ -158,9 +158,12 @@ fn render_row(row: &Row, theme: &Theme, highlight: Highlight) -> Vec<Span<'stati
     let whole = highlight == Highlight::Whole;
     let key_on = whole || highlight == Highlight::Key;
     let value_on = whole || highlight == Highlight::Value;
+    let close_on = whole || highlight == Highlight::Close;
     let mut spans = vec![Span::styled(
         " ".repeat(INDENT_WIDTH * row.depth),
-        patch(Style::default(), whole, theme),
+        // On a closing row the indent is the whitespace just inside the
+        // bracket, so a selected block covers it along with the bracket.
+        patch(Style::default(), close_on, theme),
     )];
     match &row.content {
         RowContent::Container {
@@ -190,7 +193,6 @@ fn render_row(row: &Row, theme: &Theme, highlight: Highlight) -> Vec<Span<'stati
             push_comma(&mut spans, row.comma, theme, whole);
         }
         RowContent::Close { is_object } => {
-            let close_on = whole || highlight == Highlight::Close;
             spans.push(Span::styled(
                 if *is_object { "}" } else { "]" },
                 patch(theme.punct, close_on, theme),
@@ -300,9 +302,11 @@ mod tests {
         assert_eq!(buf[(4, 2)].style().bg, sel);
         assert_eq!(buf[(4, 3)].style().bg, sel);
 
-        // Row 4 is `  ]` — the block ends at the close bracket.
+        // Row 4 is `  ]` — the block ends at the close bracket, and the
+        // indent before it is inside the brackets.
         assert_eq!(buf[(2, 4)].style().bg, sel, "close bracket highlighted");
-        assert_ne!(buf[(0, 4)].style().bg, sel, "outside the brackets");
+        assert_eq!(buf[(0, 4)].style().bg, sel, "indent before the bracket highlighted");
+        assert_ne!(buf[(2, 5)].style().bg, sel, "the next entry stays out");
 
         // Row 5 is `  "b": 3` — outside the block.
         assert_ne!(buf[(3, 5)].style().bg, sel);
