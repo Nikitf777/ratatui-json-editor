@@ -15,13 +15,16 @@
 //!   consumer through [`ScrollMode`] and the state's viewport accessors, so
 //!   things like scrollbars stay in the application.
 //!
-//! Text input, modals, keymaps and scrollbars all live in the consumer. The
-//! bundled demo (`cargo run --example demo`) shows one complete composition:
-//! a normal mode and an edit mode backed by `ratatui-textarea`, a framed
-//! full-width input above the panels, and a scrollbar.
+//! Text input, formatting, modals, keymaps and scrollbars all live in the
+//! consumer: the library has no pretty printer — `Json` is a plain enum to
+//! walk and format however you like ([`Json::write_compact`] is exposed as a
+//! small building block). The bundled demo (`cargo run --example demo`) shows
+//! one complete composition: a normal mode and an edit mode backed by
+//! `ratatui-textarea`, a framed full-width input above the panels, a
+//! scrollbar, and the consumer's own pretty printer.
 //!
 //! ```
-//! use ratatui_json_editor::JsonEditorState;
+//! use ratatui_json_editor::{Json, JsonEditorState};
 //!
 //! let mut state = JsonEditorState::parse(r#"{"answer": 0}"#).unwrap();
 //! state.select_down(); // select root["answer"] (values are selected by default)
@@ -29,11 +32,11 @@
 //! // Hand `state.edit()` to your input widget; here we just replace the text.
 //! assert_eq!(state.edit(), "0");
 //! assert!(state.commit("forty two").is_ok()); // bare text is detected as a string
-//! assert_eq!(state.root().to_compact_string(), r#"{"answer":"forty two"}"#);
+//! assert_eq!(state.root(), &Json::parse(r#"{"answer":"forty two"}"#).unwrap());
 //!
 //! // Invalid text is rejected and never reaches the document.
 //! assert!(state.commit("[1,]").is_err());
-//! assert_eq!(state.root().to_compact_string(), r#"{"answer":"forty two"}"#);
+//! assert_eq!(state.root(), &Json::parse(r#"{"answer":"forty two"}"#).unwrap());
 //! ```
 //!
 //! [ratatui]: https://docs.rs/ratatui

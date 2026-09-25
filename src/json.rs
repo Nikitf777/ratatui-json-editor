@@ -117,21 +117,13 @@ impl Json {
         }
     }
 
-    /// Serializes the value to a single line.
-    pub fn to_compact_string(&self) -> String {
-        let mut out = String::new();
-        self.write_compact(&mut out);
-        out
-    }
-
-    /// Serializes the value with two-space indentation (one line per node).
-    pub fn to_pretty_string(&self) -> String {
-        let mut out = String::new();
-        self.write_pretty(&mut out, 0);
-        out
-    }
-
-    fn write_compact(&self, out: &mut String) {
+    /// Writes the value as compact JSON text (no insignificant whitespace).
+    ///
+    /// A small building block — the editing protocol uses it for nested items
+    /// in [`crate::JsonEditorState::edit`]. There is deliberately no pretty
+    /// printer: how documents are formatted for output is the consumer's
+    /// decision (`Json` is a plain enum to walk and print however you like).
+    pub fn write_compact(&self, out: &mut String) {
         match self {
             Json::Null => out.push_str("null"),
             Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -161,48 +153,6 @@ impl Json {
             }
         }
     }
-
-    fn write_pretty(&self, out: &mut String, level: usize) {
-        match self {
-            Json::Array(items) if items.is_empty() => out.push_str("[]"),
-            Json::Object(entries) if entries.is_empty() => out.push_str("{}"),
-            Json::Array(items) => {
-                out.push_str("[\n");
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(",\n");
-                    }
-                    indent(out, level + 1);
-                    item.write_pretty(out, level + 1);
-                }
-                out.push('\n');
-                indent(out, level);
-                out.push(']');
-            }
-            Json::Object(entries) => {
-                out.push_str("{\n");
-                for (i, (key, value)) in entries.iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(",\n");
-                    }
-                    indent(out, level + 1);
-                    out.push_str(&quote_string(key));
-                    out.push_str(": ");
-                    value.write_pretty(out, level + 1);
-                }
-                out.push('\n');
-                indent(out, level);
-                out.push('}');
-            }
-            other => other.write_compact(out),
-        }
-    }
-}
-
-impl fmt::Display for Json {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_compact_string())
-    }
 }
 
 /// Quotes and escapes `s` as a JSON string literal (including the quotes).
@@ -224,12 +174,6 @@ pub fn quote_string(s: &str) -> String {
     }
     out.push('"');
     out
-}
-
-fn indent(out: &mut String, level: usize) {
-    for _ in 0..level {
-        out.push_str("  ");
-    }
 }
 
 fn is_number(s: &str) -> bool {
@@ -519,7 +463,9 @@ mod tests {
     #[test]
     fn preserves_number_text() {
         let value = Json::parse("[1.50, 1e3, -0, 0]").unwrap();
-        assert_eq!(value.to_compact_string(), "[1.50,1e3,-0,0]");
+        let mut text = String::new();
+        value.write_compact(&mut text);
+        assert_eq!(text, "[1.50,1e3,-0,0]");
     }
 
     #[test]
@@ -533,12 +479,12 @@ mod tests {
     }
 
     #[test]
-    fn roundtrips_through_pretty_printing() {
+    fn roundtrips_through_compact_text() {
         let doc = r#"{"name":"café \u20ac","list":[[],{},null,["deep"]],"n":1.50,"ok":true}"#;
         let value = Json::parse(doc).unwrap();
-        let pretty = value.to_pretty_string();
-        assert_eq!(Json::parse(&pretty).unwrap(), value);
-        assert_eq!(Json::parse(&value.to_compact_string()).unwrap(), value);
+        let mut text = String::new();
+        value.write_compact(&mut text);
+        assert_eq!(Json::parse(&text).unwrap(), value);
     }
 
     #[test]
@@ -592,11 +538,5 @@ mod tests {
     fn rejects_deep_nesting() {
         let deep = format!("{}{}", "[".repeat(MAX_DEPTH + 2), "]".repeat(MAX_DEPTH + 2));
         assert!(Json::parse(&deep).is_err());
-    }
-
-    #[test]
-    fn display_is_compact() {
-        let value = Json::parse(r#"{"a": [1, 2],"b": null}"#).unwrap();
-        assert_eq!(value.to_string(), r#"{"a":[1,2],"b":null}"#);
     }
 }

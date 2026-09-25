@@ -607,15 +607,22 @@ fn expose_value(value: &Json) -> String {
         Json::Object(entries) if entries.is_empty() => "{}".to_string(),
         Json::Array(items) => items
             .iter()
-            .map(|item| item.to_compact_string())
+            .map(compact)
             .collect::<Vec<_>>()
             .join(", "),
         Json::Object(entries) => entries
             .iter()
-            .map(|(key, value)| format!("{}: {}", quote_string(key), value.to_compact_string()))
+            .map(|(key, value)| format!("{}: {}", quote_string(key), compact(value)))
             .collect::<Vec<_>>()
             .join(", "),
     }
+}
+
+/// Compact JSON text of a value, for nested items in [`expose_value`].
+fn compact(value: &Json) -> String {
+    let mut out = String::new();
+    value.write_compact(&mut out);
+    out
 }
 
 /// Interprets edited value text: see [`JsonEditorState::commit`]. Strict JSON (with
@@ -724,8 +731,9 @@ mod tests {
     }
 
     fn assert_valid(state: &JsonEditorState) {
-        let reparsed = Json::parse(&state.root().to_pretty_string()).unwrap();
-        assert_eq!(&reparsed, state.root());
+        let mut text = String::new();
+        state.root().write_compact(&mut text);
+        assert_eq!(&Json::parse(&text).unwrap(), state.root());
     }
 
     #[test]

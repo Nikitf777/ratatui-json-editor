@@ -53,8 +53,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use ratatui_json_editor::{
-    clip_spans, highlight_json, overlay, runs_to_spans, styled_runs, EditError, Field, JsonEditor,
-    JsonEditorState, Run, ScrollMode, Theme,
+    clip_spans, highlight_json, overlay, quote_string, runs_to_spans, styled_runs, EditError, Field,
+    Json, JsonEditor, JsonEditorState, Run, ScrollMode, Theme,
 };
 use ratatui_textarea::{DataCursor, Input, Key, TextArea};
 use tui_scrollbar::{GlyphSet, ScrollBar, ScrollBarArrows, ScrollLengths};
@@ -88,7 +88,7 @@ fn main() -> io::Result<()> {
     ratatui::restore();
     result?;
 
-    println!("{}", app.state.root().to_pretty_string());
+    println!("{}", pretty(app.state.root()));
     Ok(())
 }
 
@@ -371,7 +371,7 @@ fn render_editor(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_output(app: &App, area: Rect, frame: &mut Frame) {
     let block = Block::bordered().title(" Live output (always valid JSON) ");
-    let text = highlight_json(&app.state.root().to_pretty_string(), &app.theme);
+    let text = highlight_json(&pretty(app.state.root()), &app.theme);
     frame.render_widget(Paragraph::new(text).block(block), area);
 }
 
@@ -397,7 +397,7 @@ fn render_input_line(frame: &mut Frame, app: &mut App, area: Rect) {
     } else if inner.height > 0 {
         let text = match app.state.selected_field() {
             Field::Key => app.state.edit(),
-            Field::Value => app.state.selected().to_compact_string(),
+            Field::Value => compact(app.state.selected()),
         };
         let chars: Vec<char> = text.chars().collect();
         let runs = styled_runs(&text, &app.theme);
@@ -541,4 +541,68 @@ fn render_help(app: &App, area: Rect, frame: &mut Frame) {
         ))),
         area,
     );
+}
+
+// -- formatting (the consumer's job: the library never serializes) ----------
+
+/// The demo's pretty printer: two-space indent, `": "` and `", "`. The
+/// library deliberately has no opinion here — `Json` is a plain enum to walk
+/// and format however you like.
+fn pretty(value: &Json) -> String {
+    let mut out = String::new();
+    write_pretty(value, 0, &mut out);
+    out
+}
+
+fn write_pretty(value: &Json, level: usize, out: &mut String) {
+    match value {
+        Json::Null => out.push_str("null"),
+        Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Json::Number(n) => out.push_str(n.as_str()),
+        Json::String(s) => out.push_str(&quote_string(s)),
+        Json::Array(items) if items.is_empty() => out.push_str("[]"),
+        Json::Object(entries) if entries.is_empty() => out.push_str("{}"),
+        Json::Array(items) => {
+            out.push_str("[\n");
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(",\n");
+                }
+                indent(out, level + 1);
+                write_pretty(item, level + 1, out);
+            }
+            out.push('\n');
+            indent(out, level);
+            out.push(']');
+        }
+        Json::Object(entries) => {
+            out.push_str("{\n");
+            for (i, (key, value)) in entries.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(",\n");
+                }
+                indent(out, level + 1);
+                out.push_str(&quote_string(key));
+                out.push_str(": ");
+                write_pretty(value, level + 1, out);
+            }
+            out.push('\n');
+            indent(out, level);
+            out.push('}');
+        }
+    }
+}
+
+/// Compact one-liner for the mirror line — the library's compact writer is
+/// public; the pretty printer above is intentionally the consumer's own.
+fn compact(value: &Json) -> String {
+    let mut out = String::new();
+    value.write_compact(&mut out);
+    out
+}
+
+fn indent(out: &mut String, level: usize) {
+    for _ in 0..level {
+        out.push_str("  ");
+    }
 }
