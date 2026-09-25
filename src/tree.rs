@@ -12,8 +12,9 @@ pub(crate) const INDENT_WIDTH: usize = 2;
 
 /// One rendered row of the tree.
 pub(crate) struct Row {
-    /// Index path of the node this row belongs to; `None` for closing rows.
-    pub(crate) path: Option<Vec<usize>>,
+    /// Index path of the node this row belongs to. A closing row belongs to
+    /// the container it closes.
+    pub(crate) path: Vec<usize>,
     /// Nesting depth (the row's indent is `depth * 2` spaces).
     pub(crate) depth: usize,
     /// Whether a separating comma follows this row's content.
@@ -56,7 +57,7 @@ fn push(
         Json::Array(items) => {
             let empty = items.is_empty();
             out.push(Row {
-                path: Some(path.clone()),
+                path: path.clone(),
                 depth,
                 comma,
                 content: RowContent::Container {
@@ -72,7 +73,7 @@ fn push(
             }
             if !empty {
                 out.push(Row {
-                    path: None,
+                    path: path.clone(),
                     depth,
                     comma,
                     content: RowContent::Close { is_object: false },
@@ -82,7 +83,7 @@ fn push(
         Json::Object(entries) => {
             let empty = entries.is_empty();
             out.push(Row {
-                path: Some(path.clone()),
+                path: path.clone(),
                 depth,
                 comma,
                 content: RowContent::Container {
@@ -105,7 +106,7 @@ fn push(
             }
             if !empty {
                 out.push(Row {
-                    path: None,
+                    path: path.clone(),
                     depth,
                     comma,
                     content: RowContent::Close { is_object: true },
@@ -113,7 +114,7 @@ fn push(
             }
         }
         scalar => out.push(Row {
-            path: Some(path.clone()),
+            path: path.clone(),
             depth,
             comma,
             content: RowContent::Scalar {

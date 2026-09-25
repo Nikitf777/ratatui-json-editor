@@ -166,16 +166,14 @@ impl JsonEditorState {
     /// Rows are document rows as counted by [`Self::line_count`] — subtract
     /// [`Self::scroll`] from a screen row. The column layout is the rendered
     /// one: two spaces of indent per level, then `"key": value`, so a click on
-    /// the key selects the key and anywhere else selects the value. Closing
-    /// bracket rows select nothing and return `false`.
+    /// the key selects the key and anywhere else selects the value. A closing
+    /// bracket row selects the block it closes (with its value).
     pub fn select_at(&mut self, row: usize, col: usize) -> bool {
         let rows = flatten(&self.root);
         let Some(target) = rows.get(row) else {
             return false;
         };
-        let Some(path) = target.path.clone() else {
-            return false;
-        };
+        let path = target.path.clone();
         self.cursor = path;
         let key = match &target.content {
             RowContent::Container { key, .. } | RowContent::Scalar { key, .. } => key.as_deref(),
@@ -467,7 +465,7 @@ impl JsonEditorState {
     pub fn cursor_line(&self) -> usize {
         flatten(&self.root)
             .iter()
-            .position(|row| row.path.as_ref() == Some(&self.cursor))
+            .position(|row| row.path == self.cursor)
             .unwrap_or(0)
     }
 
@@ -495,7 +493,11 @@ impl JsonEditorState {
 
     fn move_cursor(&mut self, delta: i32) -> bool {
         let rows = flatten(&self.root);
-        let paths: Vec<&Vec<usize>> = rows.iter().filter_map(|row| row.path.as_ref()).collect();
+        let paths: Vec<&Vec<usize>> = rows
+            .iter()
+            .filter(|row| !matches!(row.content, RowContent::Close { .. }))
+            .map(|row| &row.path)
+            .collect();
         let pos = paths.iter().position(|p| **p == self.cursor).unwrap_or(0);
         let target = (pos as i32 + delta).clamp(0, paths.len() as i32 - 1) as usize;
         if paths[target] == &self.cursor {
@@ -1031,7 +1033,11 @@ mod tests {
     fn select_at_picks_the_node_and_field_under_a_pointer() {
         // Rows: 0 `{`, 1 `  "a": [`, 2 `    1`, 3 `  ]`, 4 `  "b": 2`, 5 `}`.
         let mut s = doc(r#"{"a": [1], "b": 2}"#);
-        assert!(!s.select_at(3, 2), "closing rows select nothing");
+        assert!(s.select_at(3, 2), "closing rows select the block they close");
+        assert_eq!(s.cursor_path(), [0]);
+        assert_eq!(s.selected_field(), Field::Value, "the bracket is value text");
+
+        assert!(s.select_at(5, 0), "the root's closing row selects the root");
         assert_eq!(s.cursor_path(), Vec::<usize>::new());
 
         assert!(s.select_at(1, 3), "on the key");
