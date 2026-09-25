@@ -20,8 +20,7 @@
 //! construction.
 
 use crate::json::{quote_string, Json, ParseError};
-use crate::tree::{flatten, RowContent, INDENT_WIDTH};
-use unicode_width::UnicodeWidthStr;
+use crate::tree::{field_spans, flatten, row_width, RowContent};
 
 /// Why an editing operation was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,6 +73,7 @@ pub struct JsonEditorState {
     cursor: Vec<usize>,
     field: Field,
     scroll: usize,
+    scroll_x: usize,
 }
 
 impl JsonEditorState {
@@ -84,6 +84,7 @@ impl JsonEditorState {
             cursor: Vec::new(),
             field: Field::Value,
             scroll: 0,
+            scroll_x: 0,
         }
     }
 
@@ -175,16 +176,9 @@ impl JsonEditorState {
         };
         let path = target.path.clone();
         self.cursor = path;
-        let key = match &target.content {
-            RowContent::Container { key, .. } | RowContent::Scalar { key, .. } => key.as_deref(),
-            RowContent::Close { .. } => None,
-        };
+        let (key, _) = field_spans(target);
         self.field = match key {
-            Some(key)
-                if col < target.depth * INDENT_WIDTH + quote_string(key).width() + 2 =>
-            {
-                Field::Key
-            }
+            Some((_, key_end)) if col < key_end => Field::Key,
             _ => Field::Value,
         };
         self.clamp_field();
@@ -488,6 +482,46 @@ impl JsonEditorState {
             self.scroll = cursor;
         } else if viewport_height > 0 && cursor >= self.scroll + viewport_height {
             self.scroll = cursor + 1 - viewport_height;
+        }
+    }
+
+    /// Widest row in display columns — the content length for horizontal
+    /// scrollbars.
+    pub fn content_width(&self) -> usize {
+        flatten(&self.root).iter().map(row_width).max().unwrap_or(0)
+    }
+
+    /// Horizontal offset of the first visible display column.
+    pub fn scroll_x(&self) -> usize {
+        self.scroll_x
+    }
+
+    /// Scrolls horizontally so that `x` is the first visible column (clamped
+    /// to the content). Pair with [`crate::ScrollMode::Manual`].
+    pub fn set_scroll_x(&mut self, x: usize) {
+        self.scroll_x = x.min(self.content_width().saturating_sub(1));
+    }
+
+    /// Scrolls horizontally the minimum amount needed to show the selected
+    /// field's text in a viewport of `viewport_width` columns.
+    pub fn ensure_cursor_visible_x(&mut self, viewport_width: usize) {
+        let rows = flatten(&self.root);
+        let Some(row) = rows.iter().find(|row| row.path == self.cursor) else {
+            return;
+        };
+        let (key, value) = field_spans(row);
+        let (start, end) = match self.field {
+            Field::Key => key.unwrap_or(value),
+            Field::Value => value,
+        };
+        if start < self.scroll_x {
+            self.scroll_x = start;
+        } else if end - self.scroll_x > viewport_width {
+            self.scroll_x = if end - start > viewport_width {
+                start
+            } else {
+                end - viewport_width
+            };
         }
     }
 
@@ -1055,6 +1089,25 @@ mod tests {
         assert!(s.select_at(4, 2), "later entry");
         assert_eq!(s.cursor_path(), [1]);
         assert_eq!(s.selected_field(), Field::Key);
+    }
+
+    #[test]
+    fn horizontal_scrolling() {
+        // `{"a": 1}` rows: `{`, `  "a": 1`, `}` — the widest is 8 columns.
+        let mut s = doc(r#"{"a": 1}"#);
+        assert_eq!(s.content_width(), 8);
+        s.set_scroll_x(99);
+        assert_eq!(s.scroll_x(), 7, "clamped to the content");
+
+        s.set_scroll_x(0);
+        s.select_down();
+        s.ensure_cursor_visible_x(4);
+        assert_eq!(s.scroll_x(), 4, "the value is kept in view");
+        s.ensure_cursor_visible_x(2);
+        assert_eq!(s.scroll_x(), 6);
+        s.select_key();
+        s.ensure_cursor_visible_x(10);
+        assert_eq!(s.scroll_x(), 2, "back to the key");
     }
 
     #[test]

@@ -25,7 +25,8 @@
 //!
 //! Mouse: click in the tree to select the key or value under the pointer,
 //! click the input line to place the text cursor, wheel to scroll, and the
-//! scrollbar handles clicks, arrows and thumb drags.
+//! vertical and horizontal scrollbars (both panes) handle clicks, arrows and
+//! thumb drags.
 //!
 //! Keys in normal mode:
 //!
@@ -145,7 +146,13 @@ struct App {
     input_rect: Rect,
     tree_rect: Rect,
     scrollbar_rect: Rect,
+    hbar_rect: Rect,
+    output_hbar_rect: Rect,
+    output_width: usize,
+    output_scroll_x: usize,
     scrollbar_interaction: ScrollBarInteraction,
+    hbar_interaction: ScrollBarInteraction,
+    output_hbar_interaction: ScrollBarInteraction,
 }
 
 impl App {
@@ -162,7 +169,13 @@ impl App {
             input_rect: Rect::default(),
             tree_rect: Rect::default(),
             scrollbar_rect: Rect::default(),
+            hbar_rect: Rect::default(),
+            output_hbar_rect: Rect::default(),
+            output_width: 0,
+            output_scroll_x: 0,
             scrollbar_interaction: ScrollBarInteraction::new(),
+            hbar_interaction: ScrollBarInteraction::new(),
+            output_hbar_interaction: ScrollBarInteraction::new(),
         }
     }
 
@@ -262,6 +275,7 @@ impl App {
         // Demo policy: with `ScrollMode::Manual` the application decides when
         // to follow the cursor.
         self.state.ensure_cursor_visible(self.view_height);
+        self.state.ensure_cursor_visible_x(self.tree_rect.width as usize);
         false
     }
 
@@ -297,6 +311,7 @@ impl App {
         }
         move_selection(&mut self.state);
         self.state.ensure_cursor_visible(self.view_height);
+        self.state.ensure_cursor_visible_x(self.tree_rect.width as usize);
         self.mode = Mode::Normal;
     }
 
@@ -346,26 +361,52 @@ impl App {
     /// clicks select in the tree (key vs value by position) and in the input
     /// line (which places the text cursor); the wheel scrolls the tree.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
-        let scrollbar = scrollbar(
-            self.state.line_count(),
-            self.tree_rect.height as usize,
-            self.state.scroll(),
-        );
-        if let Some(event) = scroll_event(mouse)
-            && let Some(ScrollCommand::SetOffset(offset)) =
-                scrollbar.handle_event(self.scrollbar_rect, event, &mut self.scrollbar_interaction)
-        {
-            self.state.set_scroll(offset);
-            return;
+        if let Some(event) = scroll_event(mouse) {
+            let vbar = scrollbar(
+                self.state.line_count(),
+                self.tree_rect.height as usize,
+                self.state.scroll(),
+            );
+            if let Some(ScrollCommand::SetOffset(offset)) =
+                vbar.handle_event(self.scrollbar_rect, event, &mut self.scrollbar_interaction)
+            {
+                self.state.set_scroll(offset);
+                return;
+            }
+            let hbar = h_scrollbar(
+                self.state.content_width(),
+                self.tree_rect.width as usize,
+                self.state.scroll_x(),
+            );
+            if let Some(ScrollCommand::SetOffset(offset)) =
+                hbar.handle_event(self.hbar_rect, event, &mut self.hbar_interaction)
+            {
+                self.state.set_scroll_x(offset);
+                return;
+            }
+            let out = h_scrollbar(
+                self.output_width,
+                self.output_hbar_rect.width as usize,
+                self.output_scroll_x,
+            );
+            if let Some(ScrollCommand::SetOffset(offset)) = out.handle_event(
+                self.output_hbar_rect,
+                event,
+                &mut self.output_hbar_interaction,
+            ) {
+                self.output_scroll_x = offset;
+                return;
+            }
         }
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if inside(self.tree_rect, mouse) {
                     let row = self.state.scroll() + (mouse.row - self.tree_rect.y) as usize;
-                    let col = (mouse.column - self.tree_rect.x) as usize;
+                    let col = (mouse.column - self.tree_rect.x) as usize + self.state.scroll_x();
                     if self.state.select_at(row, col) {
                         self.state.ensure_cursor_visible(self.view_height);
+                        self.state.ensure_cursor_visible_x(self.tree_rect.width as usize);
                     }
                 } else if inside(self.input_rect, mouse) {
                     self.place_text_cursor(mouse);
@@ -379,6 +420,24 @@ impl App {
                 let top = self.state.scroll().saturating_sub(3);
                 self.state.set_scroll(top);
             }
+            MouseEventKind::ScrollDown if inside(self.hbar_rect, mouse) => {
+                let x = self.state.scroll_x() + 3;
+                self.state.set_scroll_x(x);
+            }
+            MouseEventKind::ScrollUp if inside(self.hbar_rect, mouse) => {
+                let x = self.state.scroll_x().saturating_sub(3);
+                self.state.set_scroll_x(x);
+            }
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight
+                if inside(self.tree_rect, mouse) || inside(self.hbar_rect, mouse) =>
+            {
+                let x = if mouse.kind == MouseEventKind::ScrollRight {
+                    self.state.scroll_x() + 3
+                } else {
+                    self.state.scroll_x().saturating_sub(3)
+                };
+                self.state.set_scroll_x(x);
+            }
             _ => {}
         }
     }
@@ -391,7 +450,7 @@ impl App {
         }
         let row = (self.edit_row + (mouse.row - self.input_rect.y) as usize)
             .min(self.textarea.lines().len() - 1);
-        let col = (mouse.column - self.input_rect.x) as usize;
+        let col = (mouse.column - self.input_rect.x) as usize + self.edit_col;
         let line = self.textarea.lines()[row].clone();
         self.textarea.cancel_selection();
         self.textarea
@@ -425,27 +484,50 @@ fn render_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(block, area);
     let [tree_area, bar_area] =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+    let [tree_area, hbar_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(tree_area);
     app.view_height = tree_area.height as usize;
     app.tree_rect = tree_area;
     app.scrollbar_rect = bar_area;
+    app.hbar_rect = hbar_area;
 
     let widget = JsonEditor::new()
         .theme(app.theme.clone())
         .scroll_mode(ScrollMode::Manual);
     frame.render_stateful_widget(&widget, tree_area, &mut app.state);
 
-    let scrollbar = scrollbar(
+    let vbar = scrollbar(
         app.state.line_count(),
         tree_area.height as usize,
         app.state.scroll(),
     );
-    frame.render_widget(&scrollbar, bar_area);
+    frame.render_widget(&vbar, bar_area);
+    let hbar = h_scrollbar(
+        app.state.content_width(),
+        tree_area.width as usize,
+        app.state.scroll_x(),
+    );
+    frame.render_widget(&hbar, hbar_area);
 }
 
-fn render_output(app: &App, area: Rect, frame: &mut Frame) {
+fn render_output(app: &mut App, area: Rect, frame: &mut Frame) {
     let block = Block::bordered().title(" Live output (always valid JSON) ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [text_area, hbar_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+    app.output_hbar_rect = hbar_area;
+
     let text = highlight_json(&pretty(app.state.root()), &app.theme);
-    frame.render_widget(Paragraph::new(text).block(block), area);
+    let width = text.iter().map(|line| line.width()).max().unwrap_or(0);
+    app.output_width = width;
+    app.output_scroll_x = app.output_scroll_x.min(width.saturating_sub(1));
+    frame.render_widget(
+        Paragraph::new(text).scroll((0, app.output_scroll_x as u16)),
+        text_area,
+    );
+    let hbar = h_scrollbar(width, hbar_area.width as usize, app.output_scroll_x);
+    frame.render_widget(&hbar, hbar_area);
 }
 
 /// The text input: a framed full-width box above both panels, one text row
@@ -587,6 +669,16 @@ fn scrollbar(content_len: usize, viewport_len: usize, offset: usize) -> ScrollBa
     .glyph_set(GlyphSet::box_drawing())
 }
 
+fn h_scrollbar(content_len: usize, viewport_len: usize, offset: usize) -> ScrollBar {
+    ScrollBar::horizontal(ScrollLengths {
+        content_len,
+        viewport_len,
+    })
+    .offset(offset)
+    .arrows(ScrollBarArrows::Both)
+    .glyph_set(GlyphSet::box_drawing())
+}
+
 /// Converts a crossterm mouse event into the scrollbar's backend-agnostic
 /// input, so no crossterm feature of `tui-scrollbar` is needed.
 fn scroll_event(mouse: MouseEvent) -> Option<ScrollEvent> {
@@ -602,14 +694,18 @@ fn scroll_event(mouse: MouseEvent) -> Option<ScrollEvent> {
         MouseEventKind::Down(MouseButton::Left) => pointer(PointerEventKind::Down),
         MouseEventKind::Drag(MouseButton::Left) => pointer(PointerEventKind::Drag),
         MouseEventKind::Up(MouseButton::Left) => pointer(PointerEventKind::Up),
-        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-            let delta = if mouse.kind == MouseEventKind::ScrollDown {
-                1
-            } else {
-                -1
+        MouseEventKind::ScrollDown
+        | MouseEventKind::ScrollUp
+        | MouseEventKind::ScrollLeft
+        | MouseEventKind::ScrollRight => {
+            let (axis, delta) = match mouse.kind {
+                MouseEventKind::ScrollRight => (ScrollAxis::Horizontal, 1),
+                MouseEventKind::ScrollLeft => (ScrollAxis::Horizontal, -1),
+                MouseEventKind::ScrollDown => (ScrollAxis::Vertical, 1),
+                _ => (ScrollAxis::Vertical, -1),
             };
             ScrollEvent::ScrollWheel(ScrollWheel {
-                axis: ScrollAxis::Vertical,
+                axis,
                 delta,
                 column: mouse.column,
                 row: mouse.row,

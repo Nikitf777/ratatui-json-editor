@@ -11,10 +11,10 @@ use ratatui_core::style::Style;
 use ratatui_core::text::{Line, Span};
 use ratatui_core::widgets::StatefulWidget;
 
-use crate::highlight::Theme;
+use crate::highlight::{clip_spans, Theme};
 use crate::json::{quote_string, Json};
 use crate::state::{Field, JsonEditorState};
-use crate::tree::{flatten, Row, RowContent, INDENT_WIDTH};
+use crate::tree::{flatten, scalar_text, Row, RowContent, INDENT_WIDTH};
 
 /// Who scrolls the tree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -105,12 +105,9 @@ impl StatefulWidget for &JsonEditor {
                 },
                 _ => Highlight::None,
             };
-            buf.set_line(
-                area.x,
-                rect.y,
-                &Line::from(render_row(row, &self.theme, highlight)),
-                area.width,
-            );
+            let spans = render_row(row, &self.theme, highlight);
+            let spans = clip_spans(spans, state.scroll_x(), area.width as usize);
+            buf.set_line(area.x, rect.y, &Line::from(spans), area.width);
         }
     }
 }
@@ -221,13 +218,13 @@ fn push_key(spans: &mut Vec<Span<'static>>, key: &str, theme: &Theme, key_on: bo
 }
 
 fn scalar_span(value: &Json, theme: &Theme, selected: bool) -> Span<'static> {
-    let (text, style) = match value {
-        Json::String(s) => (quote_string(s), theme.string),
-        Json::Number(n) => (n.to_string(), theme.number),
-        Json::Bool(b) => (b.to_string(), theme.boolean),
-        _ => ("null".to_string(), theme.null),
+    let style = match value {
+        Json::String(_) => theme.string,
+        Json::Number(_) => theme.number,
+        Json::Bool(_) => theme.boolean,
+        _ => theme.null,
     };
-    Span::styled(text, patch(style, selected, theme))
+    Span::styled(scalar_text(value), patch(style, selected, theme))
 }
 
 fn push_comma(spans: &mut Vec<Span<'static>>, comma: bool, theme: &Theme, on: bool) {
@@ -265,6 +262,15 @@ mod tests {
         let theme = Theme::default();
         assert_eq!(buf[(2, 1)].style().fg, theme.key.fg);
         assert_eq!(buf[(8, 1)].style().fg, theme.string.fg);
+    }
+
+    #[test]
+    fn scrolls_horizontally() {
+        let mut state = JsonEditorState::parse(r#"{"a": 1}"#).unwrap();
+        state.select_down();
+        state.set_scroll_x(2);
+        let buf = render(&mut state, 30, 5);
+        assert_eq!(buf[(0, 1)].symbol(), "\"", "the indent is scrolled away");
     }
 
     #[test]
