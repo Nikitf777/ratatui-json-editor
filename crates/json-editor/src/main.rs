@@ -1,8 +1,9 @@
 //! `json-editor` — a terminal JSON editor that always produces valid JSON.
 //!
 //! ```text
-//! json-editor [file.json]              edit a file (saved on Ctrl+S and on exit)
-//! cat file.json | json-editor          read stdin, write the result to stdout
+//! json-editor [file.json]      edit a file (saved on Ctrl+S and on exit)
+//! cat x.json | json-editor     read stdin, write the result to stdout
+//! json-editor --help           show all options (-h; --version / -v)
 //! ```
 //!
 //! With a file argument the document is loaded from that file and saved back
@@ -43,6 +44,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
+use clap::{ArgAction, Parser};
+
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -70,8 +73,20 @@ const TAB_LEN: usize = 2;
 /// The document a missing file (or a blank session) starts from.
 const NEW_DOCUMENT: &str = "{}";
 
+/// A terminal JSON editor that always produces valid JSON.
+#[derive(Parser)]
+#[command(version, disable_version_flag = true)]
+struct Cli {
+    /// The JSON file to edit (created if missing). Without it, a piped stdin
+    /// provides the document and the result is written to stdout.
+    file: Option<PathBuf>,
+    /// Print version information.
+    #[arg(short = 'v', long = "version", action = ArgAction::Version)]
+    version: (),
+}
+
 fn main() -> io::Result<()> {
-    let path = std::env::args().nth(1).map(PathBuf::from);
+    let path = Cli::parse().file;
     let source = match &path {
         Some(path) => match fs::read_to_string(path) {
             Ok(source) => source,
