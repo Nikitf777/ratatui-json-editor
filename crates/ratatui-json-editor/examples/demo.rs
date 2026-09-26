@@ -209,10 +209,10 @@ impl App {
                 self.state.select_right();
             }
             (Key::Tab, false, false, false) => {
-                self.state.select_left();
+                self.state.select_right();
             }
             (Key::Tab, false, false, true) => {
-                self.state.select_right();
+                self.state.select_left();
             }
             (Key::Enter, false, false, false) => {
                 self.state.select_down();
