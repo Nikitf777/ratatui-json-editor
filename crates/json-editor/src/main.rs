@@ -6,9 +6,10 @@
 //! ```
 //!
 //! With a file argument the document is loaded from that file and saved back
-//! to it (`Ctrl+S` saves early; quitting saves too). Without one, a piped
-//! stdin is read as the document and the result is written to stdout on exit
-//! (with a terminal on stdin it starts from `{}`). The TUI always goes to the
+//! to it (`Ctrl+S` saves early; quitting saves too); a missing file starts a
+//! new `{}` document and is created on save. Without one, a piped stdin is
+//! read as the document and the result is written to stdout on exit (with a
+//! terminal on stdin it starts from `{}`). The TUI always goes to the
 //! terminal, so piping stays clean.
 //!
 //! Input follows the same forgiving rules as editing: empty input is the empty
@@ -66,14 +67,26 @@ use tui_scrollbar::{
 
 const TAB_LEN: usize = 2;
 
+/// The document a missing file (or a blank session) starts from.
+const NEW_DOCUMENT: &str = "{}";
+
 fn main() -> io::Result<()> {
     let path = std::env::args().nth(1).map(PathBuf::from);
     let source = match &path {
-        Some(path) => fs::read_to_string(path)
-            .map_err(|err| io::Error::new(err.kind(), format!("read {}: {err}", path.display())))?,
+        Some(path) => match fs::read_to_string(path) {
+            Ok(source) => source,
+            // A missing file starts a new document; it is created when saved.
+            Err(err) if err.kind() == io::ErrorKind::NotFound => NEW_DOCUMENT.to_string(),
+            Err(err) => {
+                return Err(io::Error::new(
+                    err.kind(),
+                    format!("read {}: {err}", path.display()),
+                ));
+            }
+        },
         None if !io::stdin().is_terminal() => io::read_to_string(io::stdin())
             .map_err(|err| io::Error::new(err.kind(), format!("read stdin: {err}")))?,
-        None => "{}".to_string(),
+        None => NEW_DOCUMENT.to_string(),
     };
     // Documents load through the same forgiving rules as editing: empty input
     // is the empty string, bare text is detected as a value, and text missing
