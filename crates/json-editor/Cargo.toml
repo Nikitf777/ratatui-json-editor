@@ -10,6 +10,7 @@ ratatui-json-editor = { path = "../ratatui-json-editor" }
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.30"
 ratatui-textarea = "0.9"
+tui-menu = "0.3"
 tui-popup = "0.7"
 tui-scrollbar = "0.2"
 unicode-width = "0.2"

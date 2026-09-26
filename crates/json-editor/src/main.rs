@@ -74,6 +74,7 @@ use ratatui_json_editor::{
     JsonEditor, JsonEditorState, Run, ScrollMode, Theme,
 };
 use ratatui_textarea::{CursorMove, DataCursor, Input, Key, TextArea};
+use tui_menu::{Menu, MenuEvent, MenuItem, MenuState};
 use tui_popup::Popup;
 use tui_scrollbar::{
     GlyphSet, PointerButton, PointerEvent, PointerEventKind, ScrollAxis, ScrollBar, ScrollBarArrows,
@@ -258,6 +259,57 @@ enum Mode {
     Edit,
 }
 
+/// What the menu buttons run. The JSON ones mirror the `a`/`d`/`J`/`K`/`e`/`r`
+/// keys: every action that changes the document lives here.
+#[derive(Clone)]
+enum Action {
+    Save,
+    Quit,
+    Add,
+    Delete,
+    MoveUp,
+    MoveDown,
+    EditValue,
+    EditKey,
+}
+
+const FILE_MENU: &[(Action, &str)] = &[(Action::Save, "Save"), (Action::Quit, "Quit")];
+const EDIT_MENU: &[(Action, &str)] = &[
+    (Action::Add, "Add entry"),
+    (Action::Delete, "Delete entry"),
+    (Action::MoveUp, "Move entry up"),
+    (Action::MoveDown, "Move entry down"),
+    (Action::EditValue, "Edit value"),
+    (Action::EditKey, "Edit key"),
+];
+const MENUS: &[(&str, &[(Action, &str)])] = &[("File", FILE_MENU), ("Edit", EDIT_MENU)];
+
+fn build_menu() -> MenuState<Action> {
+    MenuState::new(
+        MENUS
+            .iter()
+            .map(|(name, items)| {
+                MenuItem::group(
+                    *name,
+                    items
+                        .iter()
+                        .map(|(action, label)| MenuItem::item(*label, action.clone()))
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Where a menu title starts on the bar: `tui-menu` draws one blank and then
+/// ` name ` per menu.
+fn title_x(index: usize) -> u16 {
+    1 + MENUS[..index]
+        .iter()
+        .map(|(name, _)| name.len() as u16 + 2)
+        .sum::<u16>()
+}
+
 struct App {
     state: JsonEditorState,
     path: Option<PathBuf>,
@@ -277,6 +329,9 @@ struct App {
     hbar_rect: Rect,
     scrollbar_interaction: ScrollBarInteraction,
     hbar_interaction: ScrollBarInteraction,
+    menu: MenuState<Action>,
+    menu_group: Option<usize>,
+    menu_rect: Rect,
 }
 
 impl App {
@@ -300,6 +355,9 @@ impl App {
             hbar_rect: Rect::default(),
             scrollbar_interaction: ScrollBarInteraction::new(),
             hbar_interaction: ScrollBarInteraction::new(),
+            menu: build_menu(),
+            menu_group: None,
+            menu_rect: Rect::default(),
         }
     }
 
@@ -307,6 +365,16 @@ impl App {
     fn handle_key(&mut self, input: Input) -> bool {
         if self.popup {
             return self.popup_key(input);
+        }
+        // `MenuState::is_active` is not a usable gate: `tui-menu` keeps its
+        // root highlighted forever, so it is always "active". Track openness
+        // with the group whose dropdown is showing instead.
+        if self.menu_group.is_some() {
+            return self.menu_key(input);
+        }
+        if input.key == Key::F(10) {
+            self.open_menu(0);
+            return false;
         }
         match self.mode {
             Mode::Normal => self.normal_key(input),
@@ -388,36 +456,22 @@ impl App {
                 self.begin_edit();
             }
             (Key::Char('e'), false, false, _) => {
-                self.state.select_value();
-                self.begin_edit();
+                self.do_edit_value();
             }
             (Key::Char('r'), false, false, _) => {
-                if self.state.select_key() {
-                    self.begin_edit();
-                } else {
-                    self.message = Some("only object entries have a key to edit".to_string());
-                }
+                self.do_edit_key();
             }
             (Key::Char('a'), false, false, _) => {
-                if let Err(err) = self.state.add_entry() {
-                    self.message = Some(err.to_string());
-                } else {
-                    self.dirty = true;
-                    self.state.select_key();
-                    self.begin_edit();
-                }
+                self.do_add();
             }
             (Key::Char('d') | Key::Char('x') | Key::Delete, false, false, _) => {
-                let result = self.state.delete_entry();
-                self.report(result);
+                self.do_delete();
             }
             (Key::Char('J'), false, false, _) => {
-                let result = self.state.move_entry_down();
-                self.report(result);
+                self.do_move_down();
             }
             (Key::Char('K'), false, false, _) => {
-                let result = self.state.move_entry_up();
-                self.report(result);
+                self.do_move_up();
             }
             (Key::PageDown, false, false, _) => {
                 let top = self.state.scroll() + self.view_height / 2;
@@ -480,6 +534,136 @@ impl App {
             Ok(()) => self.dirty = true,
             Err(err) => self.message = Some(err.to_string()),
         }
+    }
+
+    /// Adds an entry at the selection and starts naming it.
+    fn do_add(&mut self) {
+        if let Err(err) = self.state.add_entry() {
+            self.message = Some(err.to_string());
+        } else {
+            self.dirty = true;
+            self.state.select_key();
+            self.begin_edit();
+        }
+    }
+
+    fn do_delete(&mut self) {
+        let result = self.state.delete_entry();
+        self.report(result);
+    }
+
+    fn do_move_up(&mut self) {
+        let result = self.state.move_entry_up();
+        self.report(result);
+    }
+
+    fn do_move_down(&mut self) {
+        let result = self.state.move_entry_down();
+        self.report(result);
+    }
+
+    fn do_edit_value(&mut self) {
+        self.state.select_value();
+        self.begin_edit();
+    }
+
+    fn do_edit_key(&mut self) {
+        if self.state.select_key() {
+            self.begin_edit();
+        } else {
+            self.message = Some("only object entries have a key to edit".to_string());
+        }
+    }
+
+    // -- menu -------------------------------------------------------------
+
+    /// `tui-menu` only moves relative to the current highlight, so opening a
+    /// group walks there from a reset state.
+    fn open_menu(&mut self, index: usize) {
+        self.menu.reset();
+        self.menu.activate();
+        for _ in 0..index {
+            self.menu.right();
+        }
+        self.menu.select();
+        self.menu_group = Some(index);
+    }
+
+    /// While the menu is open it owns the navigation keys.
+    fn menu_key(&mut self, input: Input) -> bool {
+        match input.key {
+            Key::Esc => {
+                self.menu.reset();
+                self.menu_group = None;
+            }
+            Key::Enter => self.menu.select(),
+            Key::Down | Key::Char('j') => self.menu.down(),
+            Key::Up | Key::Char('k') => self.menu.up(),
+            Key::Right | Key::Char('l') => {
+                self.menu.right();
+                self.menu_group = self.menu_group.map(|group| (group + 1).min(MENUS.len() - 1));
+            }
+            Key::Left | Key::Char('h') => {
+                self.menu.left();
+                self.menu_group = self.menu_group.map(|group| group.saturating_sub(1));
+            }
+            _ => {}
+        }
+        self.menu_actions()
+    }
+
+    /// A dropdown row of the open group. `tui-menu` hangs the dropdown under
+    /// the group title with items one row below its top border.
+    fn click_menu_item(&self, mouse: MouseEvent) -> Option<usize> {
+        let group = self.menu_group?;
+        let (_, items) = MENUS[group];
+        let widest = items.iter().map(|(_, name)| name.len()).max()? as u16;
+        let x = self.menu_rect.x + title_x(group) + 2;
+        let y = self.menu_rect.y + 2;
+        if mouse.column < x || mouse.column >= x + widest + 2 || mouse.row < y {
+            return None;
+        }
+        let index = (mouse.row - y) as usize;
+        (index < items.len()).then_some(index)
+    }
+
+    fn click_menu_title(&mut self, mouse: MouseEvent) {
+        for (index, (name, _)) in MENUS.iter().enumerate() {
+            let x = self.menu_rect.x + title_x(index);
+            if mouse.column >= x && mouse.column < x + name.len() as u16 + 2 {
+                self.open_menu(index);
+                return;
+            }
+        }
+    }
+
+    /// Runs any picked menu buttons and closes the menu. Nothing else: with no
+    /// button picked the menu stays open, so arrows can move around first.
+    fn menu_actions(&mut self) -> bool {
+        let actions: Vec<Action> = self
+            .menu
+            .drain_events()
+            .map(|MenuEvent::Selected(action)| action)
+            .collect();
+        if actions.is_empty() {
+            return false;
+        }
+        self.menu.reset();
+        self.menu_group = None;
+        let mut quit = false;
+        for action in actions {
+            match action {
+                Action::Save => self.save(),
+                Action::Quit => quit = self.request_exit(),
+                Action::Add => self.do_add(),
+                Action::Delete => self.do_delete(),
+                Action::MoveUp => self.do_move_up(),
+                Action::MoveDown => self.do_move_down(),
+                Action::EditValue => self.do_edit_value(),
+                Action::EditKey => self.do_edit_key(),
+            }
+        }
+        quit
     }
 
     /// Starts editing what is selected with the existing text selected, like
@@ -564,15 +748,37 @@ impl App {
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if inside(self.tree_rect, mouse) {
-                    let row = self.state.scroll() + (mouse.row - self.tree_rect.y) as usize;
-                    let col = (mouse.column - self.tree_rect.x) as usize + self.state.scroll_x();
-                    if self.state.select_at(row, col) {
-                        self.state.ensure_cursor_visible(self.view_height);
-                        self.state.ensure_cursor_visible_x(self.tree_rect.width as usize);
+                if inside(self.menu_rect, mouse) {
+                    self.click_menu_title(mouse);
+                } else if let Some(index) = self.click_menu_item(mouse) {
+                    // The dropdown floats above the panels, so its rows win
+                    // over whatever lies beneath. Reopen the group first so
+                    // the highlight starts on its first row, then walk down:
+                    // the crate's own navigation can leave it anywhere.
+                    if let Some(group) = self.menu_group {
+                        self.open_menu(group);
+                        for _ in 0..index {
+                            self.menu.down();
+                        }
+                        self.menu.select();
                     }
-                } else if inside(self.input_rect, mouse) {
-                    self.place_text_cursor(mouse);
+                    self.menu_actions();
+                } else {
+                    if self.menu_group.is_some() {
+                        self.menu.reset();
+                        self.menu_group = None;
+                    }
+                    if inside(self.tree_rect, mouse) {
+                        let row = self.state.scroll() + (mouse.row - self.tree_rect.y) as usize;
+                        let col =
+                            (mouse.column - self.tree_rect.x) as usize + self.state.scroll_x();
+                        if self.state.select_at(row, col) {
+                            self.state.ensure_cursor_visible(self.view_height);
+                            self.state.ensure_cursor_visible_x(self.tree_rect.width as usize);
+                        }
+                    } else if inside(self.input_rect, mouse) {
+                        self.place_text_cursor(mouse);
+                    }
                 }
             }
             MouseEventKind::ScrollDown if inside(self.tree_rect, mouse) => {
@@ -624,11 +830,18 @@ impl App {
 // -- rendering --------------------------------------------------------------
 
 fn draw(frame: &mut Frame, app: &mut App) {
-    let [input, editor] = Layout::vertical([Constraint::Length(3), Constraint::Min(3)])
-        .areas(frame.area());
+    let [menu, input, editor] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Min(3),
+    ])
+    .areas(frame.area());
+    app.menu_rect = menu;
 
     render_input_line(frame, app, input);
     render_editor(frame, app, editor);
+    // Drawn last so its dropdowns float above the panels.
+    frame.render_stateful_widget(Menu::new(), menu, &mut app.menu);
 
     if app.popup {
         let popup = Popup::new("q: quit without saving\nCtrl+S: save and quit\nEsc: cancel")
