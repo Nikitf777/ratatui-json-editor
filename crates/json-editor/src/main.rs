@@ -17,7 +17,8 @@
 //! string, bare text is detected as a value (`42`, `true`, `some words`), and
 //! text missing only its closing quote or brackets is completed.
 //!
-//! Settings live in `~/.config/json-editor/config.json`:
+//! Settings live in `~/.config/json-editor/config.json`, or in the file given
+//! with `--config`:
 //!
 //! ```json
 //! { "autosave": true }
@@ -52,7 +53,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{ArgAction, Parser};
 
@@ -91,15 +92,27 @@ struct Config {
     autosave: bool,
 }
 
-/// Loads `~/.config/json-editor/config.json`; a missing file means defaults.
-fn load_config() -> io::Result<Config> {
-    let Some(home) = std::env::var_os("HOME") else {
-        return Ok(Config::default());
+/// Loads the config from `path`, or from `~/.config/json-editor/config.json`
+/// when `path` is `None`. A missing default file means defaults; an explicit
+/// path must exist so typos are caught.
+fn load_config(path: Option<&Path>) -> io::Result<Config> {
+    let (path, explicit) = match path {
+        Some(path) => (path.to_path_buf(), true),
+        None => {
+            let Some(home) = std::env::var_os("HOME") else {
+                return Ok(Config::default());
+            };
+            (
+                PathBuf::from(home).join(".config/json-editor/config.json"),
+                false,
+            )
+        }
     };
-    let path = PathBuf::from(home).join(".config/json-editor/config.json");
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound && !explicit => {
+            return Ok(Config::default());
+        }
         Err(err) => {
             return Err(io::Error::new(
                 err.kind(),
@@ -134,14 +147,19 @@ struct Cli {
     /// The JSON file to edit (created if missing). Without it, a piped stdin
     /// provides the document and the result is written to stdout.
     file: Option<PathBuf>,
+    /// Read settings from this file instead of
+    /// `~/.config/json-editor/config.json` (an explicit path must exist).
+    #[arg(short = 'c', long = "config")]
+    config: Option<PathBuf>,
     /// Print version information.
     #[arg(short = 'v', long = "version", action = ArgAction::Version)]
     version: (),
 }
 
 fn main() -> io::Result<()> {
-    let config = load_config()?;
-    let path = Cli::parse().file;
+    let cli = Cli::parse();
+    let config = load_config(cli.config.as_deref())?;
+    let path = cli.file;
     let (source, missing) = match &path {
         Some(path) => match fs::read_to_string(path) {
             Ok(source) => (source, false),
@@ -940,5 +958,12 @@ mod tests {
         assert!(parse_config(r#"{"autosave": 1}"#).is_err());
         assert!(parse_config(r#"{"autosavee": true}"#).is_err(), "typos are caught");
         assert!(parse_config("[]").is_err(), "the config must be an object");
+    }
+
+    #[test]
+    fn explicit_config_paths_must_exist() {
+        let err = load_config(Some(Path::new("/nonexistent/config.json"))).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(err.to_string().contains("/nonexistent/config.json"));
     }
 }
