@@ -7,15 +7,25 @@
 //! ```
 //!
 //! With a file argument the document is loaded from that file and saved back
-//! to it (`Ctrl+S` saves early; quitting saves too); a missing file starts a
-//! new `{}` document and is created on save. Without one, a piped stdin is
-//! read as the document and the result is written to stdout on exit (with a
-//! terminal on stdin it starts from `{}`). The TUI always goes to the
-//! terminal, so piping stays clean.
+//! to it (`Ctrl+S` saves, and with `autosave` quitting saves too); a missing
+//! file starts a new `{}` document and is created when saved. Without one, a
+//! piped stdin is read as the document and the result is written to stdout on
+//! exit (with a terminal on stdin it starts from `{}`). The TUI always goes to
+//! the terminal, so piping stays clean.
 //!
 //! Input follows the same forgiving rules as editing: empty input is the empty
 //! string, bare text is detected as a value (`42`, `true`, `some words`), and
 //! text missing only its closing quote or brackets is completed.
+//!
+//! Settings live in `~/.config/json-editor/config.json`:
+//!
+//! ```json
+//! { "autosave": true }
+//! ```
+//!
+//! `autosave` (default `false`) saves the file automatically on exit. With it
+//! off, quitting with unsaved changes shows a popup first (`q` quits without
+//! saving, `Ctrl+S` saves and quits, `Esc` cancels).
 //!
 //! Two panels: the text input on top and the JSON tree below.
 //!
@@ -63,6 +73,7 @@ use ratatui_json_editor::{
     JsonEditor, JsonEditorState, Run, ScrollMode, Theme,
 };
 use ratatui_textarea::{CursorMove, DataCursor, Input, Key, TextArea};
+use tui_popup::Popup;
 use tui_scrollbar::{
     GlyphSet, PointerButton, PointerEvent, PointerEventKind, ScrollAxis, ScrollBar, ScrollBarArrows,
     ScrollBarInteraction, ScrollCommand, ScrollEvent, ScrollLengths, ScrollWheel,
@@ -72,6 +83,49 @@ const TAB_LEN: usize = 2;
 
 /// The document a missing file (or a blank session) starts from.
 const NEW_DOCUMENT: &str = "{}";
+
+/// Settings from `~/.config/json-editor/config.json`.
+#[derive(Debug, Default)]
+struct Config {
+    /// Save the file automatically on exit.
+    autosave: bool,
+}
+
+/// Loads `~/.config/json-editor/config.json`; a missing file means defaults.
+fn load_config() -> io::Result<Config> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Ok(Config::default());
+    };
+    let path = PathBuf::from(home).join(".config/json-editor/config.json");
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(err) => {
+            return Err(io::Error::new(
+                err.kind(),
+                format!("read {}: {err}", path.display()),
+            ));
+        }
+    };
+    parse_config(&text)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {err}", path.display())))
+}
+
+fn parse_config(text: &str) -> Result<Config, String> {
+    let json = Json::parse(text).map_err(|err| err.to_string())?;
+    let Json::Object(entries) = &json else {
+        return Err("the config must be a JSON object".to_string());
+    };
+    let mut config = Config::default();
+    for (key, value) in entries {
+        match (key.as_str(), value) {
+            ("autosave", Json::Bool(autosave)) => config.autosave = *autosave,
+            ("autosave", _) => return Err("`autosave` must be true or false".to_string()),
+            (name, _) => return Err(format!("unknown option {name:?}")),
+        }
+    }
+    Ok(config)
+}
 
 /// A terminal JSON editor that always produces valid JSON.
 #[derive(Parser)]
@@ -86,12 +140,15 @@ struct Cli {
 }
 
 fn main() -> io::Result<()> {
+    let config = load_config()?;
     let path = Cli::parse().file;
-    let source = match &path {
+    let (source, missing) = match &path {
         Some(path) => match fs::read_to_string(path) {
-            Ok(source) => source,
+            Ok(source) => (source, false),
             // A missing file starts a new document; it is created when saved.
-            Err(err) if err.kind() == io::ErrorKind::NotFound => NEW_DOCUMENT.to_string(),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                (NEW_DOCUMENT.to_string(), true)
+            }
             Err(err) => {
                 return Err(io::Error::new(
                     err.kind(),
@@ -99,9 +156,12 @@ fn main() -> io::Result<()> {
                 ));
             }
         },
-        None if !io::stdin().is_terminal() => io::read_to_string(io::stdin())
-            .map_err(|err| io::Error::new(err.kind(), format!("read stdin: {err}")))?,
-        None => NEW_DOCUMENT.to_string(),
+        None if !io::stdin().is_terminal() => {
+            (io::read_to_string(io::stdin())
+                .map_err(|err| io::Error::new(err.kind(), format!("read stdin: {err}")))?,
+             false)
+        }
+        None => (NEW_DOCUMENT.to_string(), false),
     };
     // Documents load through the same forgiving rules as editing: empty input
     // is the empty string, bare text is detected as a value, and text missing
@@ -112,14 +172,15 @@ fn main() -> io::Result<()> {
         .commit(source.trim())
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
 
-    let mut app = App::new(state, path);
+    let mut app = App::new(state, path, config, missing);
     let result = run(&mut app);
     let output = format!("{}\n", pretty(app.state.root()));
     result?;
 
-    match app.path.as_ref() {
-        Some(path) => fs::write(path, output)?,
-        None => print!("{output}"),
+    // Files are written by saving (Ctrl+S, the exit autosave, or the popup);
+    // without a file the result travels on stdout.
+    if app.path.is_none() {
+        print!("{output}");
     }
     Ok(())
 }
@@ -182,6 +243,9 @@ enum Mode {
 struct App {
     state: JsonEditorState,
     path: Option<PathBuf>,
+    config: Config,
+    dirty: bool,
+    popup: bool,
     theme: Theme,
     textarea: TextArea<'static>,
     mode: Mode,
@@ -198,10 +262,13 @@ struct App {
 }
 
 impl App {
-    fn new(state: JsonEditorState, path: Option<PathBuf>) -> Self {
+    fn new(state: JsonEditorState, path: Option<PathBuf>, config: Config, dirty: bool) -> Self {
         Self {
             state,
             path,
+            config,
+            dirty,
+            popup: false,
             theme: Theme::default(),
             textarea: TextArea::default(),
             mode: Mode::Normal,
@@ -220,6 +287,9 @@ impl App {
 
     /// Returns `true` when the application should quit.
     fn handle_key(&mut self, input: Input) -> bool {
+        if self.popup {
+            return self.popup_key(input);
+        }
         match self.mode {
             Mode::Normal => self.normal_key(input),
             Mode::Edit => {
@@ -229,11 +299,44 @@ impl App {
         }
     }
 
+    /// The unsaved-changes popup: quit anyway, save and quit, or cancel.
+    fn popup_key(&mut self, input: Input) -> bool {
+        match input.key {
+            Key::Char('q') => true,
+            Key::Char('s') => {
+                self.save();
+                true
+            }
+            Key::Esc => {
+                self.popup = false;
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Quitting: with autosave the file is written on the way out; without it,
+    /// unsaved changes ask first.
+    fn request_exit(&mut self) -> bool {
+        match self.path.as_ref() {
+            None => true,
+            Some(_) if self.config.autosave => {
+                self.save();
+                true
+            }
+            Some(_) if !self.dirty => true,
+            Some(_) => {
+                self.popup = true;
+                false
+            }
+        }
+    }
+
     fn normal_key(&mut self, input: Input) -> bool {
         self.message = None;
         match (input.key, input.ctrl, input.alt, input.shift) {
             (Key::Char('q') | Key::Esc, false, false, _) | (Key::Char('c'), true, _, _) => {
-                return true;
+                return self.request_exit();
             }
             (Key::Char('s'), true, _, _) => {
                 self.save();
@@ -281,6 +384,7 @@ impl App {
                 if let Err(err) = self.state.add_entry() {
                     self.message = Some(err.to_string());
                 } else {
+                    self.dirty = true;
                     self.state.select_key();
                     self.begin_edit();
                 }
@@ -346,6 +450,7 @@ impl App {
             self.message = Some(err.to_string());
             return;
         }
+        self.dirty = true;
         move_selection(&mut self.state);
         self.state.ensure_cursor_visible(self.view_height);
         self.state.ensure_cursor_visible_x(self.tree_rect.width as usize);
@@ -353,8 +458,9 @@ impl App {
     }
 
     fn report(&mut self, result: Result<(), EditError>) {
-        if let Err(err) = result {
-            self.message = Some(err.to_string());
+        match result {
+            Ok(()) => self.dirty = true,
+            Err(err) => self.message = Some(err.to_string()),
         }
     }
 
@@ -399,7 +505,10 @@ impl App {
     fn save(&mut self) {
         self.message = match &self.path {
             Some(path) => match fs::write(path, format!("{}\n", pretty(self.state.root()))) {
-                Ok(()) => Some("saved".to_string()),
+                Ok(()) => {
+                    self.dirty = false;
+                    Some("saved".to_string())
+                }
                 Err(err) => Some(err.to_string()),
             },
             None => Some("no file to save to (the result goes to stdout on exit)".to_string()),
@@ -502,6 +611,12 @@ fn draw(frame: &mut Frame, app: &mut App) {
 
     render_input_line(frame, app, input);
     render_editor(frame, app, editor);
+
+    if app.popup {
+        let popup = Popup::new("q: quit without saving\nCtrl+S: save and quit\nEsc: cancel")
+            .title(" Unsaved changes ");
+        frame.render_widget(popup, frame.area());
+    }
 }
 
 /// The text input: a framed full-width box, one text row tall. While editing
@@ -806,5 +921,24 @@ fn compact(value: &Json) -> String {
 fn indent(out: &mut String, level: usize) {
     for _ in 0..level {
         out.push_str("  ");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_defaults_to_autosave_off() {
+        assert!(!parse_config("{}").unwrap().autosave);
+        assert!(parse_config(r#"{"autosave": true}"#).unwrap().autosave);
+        assert!(!parse_config(r#"{"autosave": false}"#).unwrap().autosave);
+    }
+
+    #[test]
+    fn config_rejects_mistakes() {
+        assert!(parse_config(r#"{"autosave": 1}"#).is_err());
+        assert!(parse_config(r#"{"autosavee": true}"#).is_err(), "typos are caught");
+        assert!(parse_config("[]").is_err(), "the config must be an object");
     }
 }
