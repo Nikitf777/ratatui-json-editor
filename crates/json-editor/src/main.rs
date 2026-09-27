@@ -28,7 +28,8 @@
 //! off, quitting with unsaved changes shows a popup first (`q` quits without
 //! saving, `Ctrl+S` saves and quits, `Esc` cancels).
 //!
-//! A menu bar sits on top (`F10` opens it: File and Edit), then two panels:
+//! A menu bar sits on top (`F10` opens it: File, Edit and View), then two
+//! panels:
 //! the text input and the JSON tree below.
 //!
 //! Keys in normal mode:
@@ -40,6 +41,7 @@
 //! e / r        edit value / edit key        a           add entry (key first)
 //! d or x       delete entry                 J / K       reorder among siblings
 //! H / L        move across the line above / below (into another object)
+//! - / + / *    hide / show / toggle the block under the cursor
 //! PgUp/PgDn    scroll                       F10         menu bar (File / Edit)
 //! q / Esc      quit (saving the result)      Ctrl+S      save
 //! ```

@@ -26,11 +26,14 @@ pub(crate) struct Row {
 
 /// What a [`Row`] shows.
 pub(crate) enum RowContent {
-    /// A container's opening row (`"key": [` / `{`), or `[]` / `{}` when empty.
+    /// A container's opening row (`"key": [` / `{`), or `[]` / `{}` when
+    /// empty, or `[...]` / `{...}` when its block is hidden.
     Container {
         key: Option<String>,
         is_object: bool,
         empty: bool,
+        /// The block is hidden, so the row stands for all of it.
+        collapsed: bool,
     },
     /// A scalar node (`"key": 42`).
     Scalar { key: Option<String>, value: Json },
@@ -59,7 +62,10 @@ pub(crate) fn field_spans(row: &Row) -> (Option<(usize, usize)>, (usize, usize))
         (indent, end)
     });
     let value_width = match &row.content {
-        RowContent::Container { empty, .. } => usize::from(*empty) + 1,
+        // `[...]` and `{...}` take four columns, `[]` and `{}` one.
+        RowContent::Container { empty, collapsed, .. } => {
+            if *collapsed { 4 } else { usize::from(*empty) + 1 }
+        }
         RowContent::Scalar { value, .. } => scalar_text(value).width(),
         RowContent::Close { .. } => 1,
     };
@@ -80,10 +86,12 @@ fn row_key(row: &Row) -> Option<&str> {
     }
 }
 
-/// Flattens the tree into rows in pre-order.
-pub(crate) fn flatten(root: &Json) -> Vec<Row> {
+/// Flattens the tree into rows in pre-order. Containers whose path is in
+/// `collapsed` contribute their opening row alone, marked so the widget can
+/// show the whole block behind `[...]` or `{...}`.
+pub(crate) fn flatten(root: &Json, collapsed: &[Vec<usize>]) -> Vec<Row> {
     let mut rows = Vec::new();
-    push(root, None, &mut Vec::new(), 0, false, &mut rows);
+    push(root, None, &mut Vec::new(), 0, false, collapsed, &mut rows);
     rows
 }
 
@@ -93,12 +101,14 @@ fn push(
     path: &mut Vec<usize>,
     depth: usize,
     comma: bool,
+    collapsed: &[Vec<usize>],
     out: &mut Vec<Row>,
 ) {
     let key = key.map(str::to_string);
     match node {
         Json::Array(items) => {
             let empty = items.is_empty();
+            let hidden = !empty && collapsed.contains(path);
             out.push(Row {
                 path: path.clone(),
                 depth,
@@ -107,14 +117,18 @@ fn push(
                     key,
                     is_object: false,
                     empty,
+                    collapsed: hidden,
                 },
             });
             for (index, item) in items.iter().enumerate() {
+                if hidden {
+                    break;
+                }
                 path.push(index);
-                push(item, None, path, depth + 1, index + 1 < items.len(), out);
+                push(item, None, path, depth + 1, index + 1 < items.len(), collapsed, out);
                 path.pop();
             }
-            if !empty {
+            if !empty && !hidden {
                 out.push(Row {
                     path: path.clone(),
                     depth,
@@ -125,6 +139,7 @@ fn push(
         }
         Json::Object(entries) => {
             let empty = entries.is_empty();
+            let hidden = !empty && collapsed.contains(path);
             out.push(Row {
                 path: path.clone(),
                 depth,
@@ -133,9 +148,13 @@ fn push(
                     key,
                     is_object: true,
                     empty,
+                    collapsed: hidden,
                 },
             });
             for (index, (entry_key, value)) in entries.iter().enumerate() {
+                if hidden {
+                    break;
+                }
                 path.push(index);
                 push(
                     value,
@@ -143,11 +162,12 @@ fn push(
                     path,
                     depth + 1,
                     index + 1 < entries.len(),
+                    collapsed,
                     out,
                 );
                 path.pop();
             }
-            if !empty {
+            if !empty && !hidden {
                 out.push(Row {
                     path: path.clone(),
                     depth,

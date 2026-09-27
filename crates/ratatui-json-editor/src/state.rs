@@ -74,6 +74,9 @@ pub struct JsonEditorState {
     field: Field,
     scroll: usize,
     scroll_x: usize,
+    /// Paths of the containers whose blocks are hidden. The document is
+    /// untouched: this only changes how the tree is laid out.
+    collapsed: Vec<Vec<usize>>,
 }
 
 impl JsonEditorState {
@@ -85,6 +88,7 @@ impl JsonEditorState {
             field: Field::Value,
             scroll: 0,
             scroll_x: 0,
+            collapsed: Vec::new(),
         }
     }
 
@@ -170,7 +174,7 @@ impl JsonEditorState {
     /// the key selects the key and anywhere else selects the value. A closing
     /// bracket row selects the block it closes (with its value).
     pub fn select_at(&mut self, row: usize, col: usize) -> bool {
-        let rows = flatten(&self.root);
+        let rows = flatten(&self.root, &self.collapsed);
         let Some(target) = rows.get(row) else {
             return false;
         };
@@ -522,7 +526,7 @@ impl JsonEditorState {
     fn container_across(&self, cursor: &[usize], down: bool) -> Option<Vec<usize>> {
         let with_key = matches!(node_at(&self.root, &cursor[..cursor.len() - 1]), Json::Object(_));
         let parent_path = &cursor[..cursor.len() - 1];
-        let lines = flatten(&self.root);
+        let lines = flatten(&self.root, &self.collapsed);
         let is_close = |row: &Row| matches!(row.content, RowContent::Close { .. });
         // The line the search starts from. Up steps off the container's own
         // line; down steps past the closing bracket that follows its children.
@@ -625,6 +629,40 @@ impl JsonEditorState {
         Ok(())
     }
 
+    /// Hides the selected container's block, so the tree shows it as one line
+    /// ending in `[...]` or `{...}`.
+    ///
+    /// This changes only what is drawn: the document keeps every entry, and
+    /// [`JsonEditorState::expand_block`] brings them back. A block that is
+    /// already hidden, or that has no entries to hide, is left as it is.
+    pub fn collapse_block(&mut self) {
+        if self.collapsed.contains(&self.cursor) {
+            return;
+        }
+        if child_count(self.selected()) == 0 {
+            return;
+        }
+        self.collapsed.push(self.cursor.clone());
+    }
+
+    /// Shows a hidden block again, as [`JsonEditorState::collapse_block`]
+    /// hides it. Expanding a container hides nothing inside it: the blocks
+    /// below stay as they were, so a deep tree can be opened a level at a
+    /// time.
+    pub fn expand_block(&mut self) {
+        self.collapsed.retain(|path| *path != self.cursor);
+    }
+
+    /// Whether the selected container's block is hidden.
+    pub fn is_collapsed(&self) -> bool {
+        self.collapsed.contains(&self.cursor)
+    }
+
+    /// The paths of the containers whose blocks are hidden, outermost first.
+    pub fn collapsed_paths(&self) -> &[Vec<usize>] {
+        &self.collapsed
+    }
+
     /// Returns the editable text of the selected field: the key's plain text,
     /// or the value in the forgiving form described by
     /// [`JsonEditorState::commit`] — a string's content without quotes, a
@@ -690,12 +728,12 @@ impl JsonEditorState {
 
     /// Number of tree rows in the document (including closing rows).
     pub fn line_count(&self) -> usize {
-        flatten(&self.root).len()
+        flatten(&self.root, &self.collapsed).len()
     }
 
     /// Index of the row the cursor is on.
     pub fn cursor_line(&self) -> usize {
-        flatten(&self.root)
+        flatten(&self.root, &self.collapsed)
             .iter()
             .position(|row| row.path == self.cursor)
             .unwrap_or(0)
@@ -726,7 +764,7 @@ impl JsonEditorState {
     /// Widest row in display columns — the content length for horizontal
     /// scrollbars.
     pub fn content_width(&self) -> usize {
-        flatten(&self.root).iter().map(row_width).max().unwrap_or(0)
+        flatten(&self.root, &self.collapsed).iter().map(row_width).max().unwrap_or(0)
     }
 
     /// Horizontal offset of the first visible display column.
@@ -743,7 +781,7 @@ impl JsonEditorState {
     /// Scrolls horizontally the minimum amount needed to show the selected
     /// field's text in a viewport of `viewport_width` columns.
     pub fn ensure_cursor_visible_x(&mut self, viewport_width: usize) {
-        let rows = flatten(&self.root);
+        let rows = flatten(&self.root, &self.collapsed);
         let Some(row) = rows.iter().find(|row| row.path == self.cursor) else {
             return;
         };
@@ -764,7 +802,7 @@ impl JsonEditorState {
     }
 
     fn move_cursor(&mut self, delta: i32) -> bool {
-        let rows = flatten(&self.root);
+        let rows = flatten(&self.root, &self.collapsed);
         let paths: Vec<&Vec<usize>> = rows
             .iter()
             .filter(|row| !matches!(row.content, RowContent::Close { .. }))
@@ -1477,6 +1515,80 @@ mod tests {
         // Down from there puts x back where it was among a's own entries.
         assert_eq!(state.move_entry_across_down(), Ok(()), "x joins a again");
         assert_eq!(state.root(), &Json::parse(r#"{"a": {"x": 1}}"#).unwrap());
+    }
+
+    #[test]
+    fn hiding_a_block_shortens_the_tree() {
+        let src = r#"{"a": {"x": 1, "y": 2}, "b": {"k": 0}}"#;
+        let mut state = doc(src);
+        let before = state.line_count();
+        state.select_down();
+        assert_eq!(state.cursor_path(), [0], "a");
+        state.collapse_block();
+        assert!(state.is_collapsed());
+        assert_eq!(state.line_count(), before - 3, "a's two children and its close");
+        assert_eq!(state.root(), &Json::parse(src).unwrap(), "the document is untouched");
+
+        // The cursor still lands on a, and moving on visits b next.
+        assert_eq!(state.cursor_path(), [0]);
+        state.select_down();
+        assert_eq!(state.cursor_path(), [1], "b, with a's block hidden");
+
+        state.select_up();
+        state.expand_block();
+        assert!(!state.is_collapsed());
+        assert_eq!(state.line_count(), before, "a's block is back");
+    }
+
+    #[test]
+    fn hiding_nests_and_unwinds_by_level() {
+        let mut state = doc(r#"{"a": {"x": {"deep": 1}, "y": 2}}"#);
+        state.select_down();
+        state.select_down();
+        assert_eq!(state.cursor_path(), [0, 0], "x");
+        state.collapse_block();
+        assert_eq!(state.line_count(), 6, "root, a, x and its close, y, a's close");
+
+        // y is still reachable, and expanding x does not expand a.
+        state.select_down();
+        assert_eq!(state.cursor_path(), [0, 1], "y");
+        state.select_up();
+        state.expand_block();
+        assert_eq!(state.line_count(), 8, "x's block is back");
+        assert!(!state.is_collapsed(), "x is open again");
+
+        // Back up to a, then hide the whole of it.
+        state.cursor_to_parent();
+        assert_eq!(state.cursor_path(), [0], "a");
+        state.collapse_block();
+        assert_eq!(state.line_count(), 3, "root, a and the root's close");
+        state.expand_block();
+        assert_eq!(state.line_count(), 8, "a is open again");
+        assert!(state.collapsed_paths().is_empty(), "nothing is hidden");
+    }
+
+    #[test]
+    fn hiding_leaves_scalars_and_empty_blocks_alone() {
+        let mut state = doc(r#"{"a": 1, "b": {}}"#);
+        state.select_down();
+        state.collapse_block();
+        assert!(!state.is_collapsed(), "a scalar has no block to hide");
+
+        state.select_down();
+        state.collapse_block();
+        assert!(!state.is_collapsed(), "an empty block has nothing to hide");
+        assert_eq!(state.line_count(), 4, "root, a, b, and the root's close");
+    }
+
+    #[test]
+    fn hiding_twice_is_harmless() {
+        let mut state = doc(r#"{"a": {"x": 1}}"#);
+        state.select_down();
+        state.collapse_block();
+        let once = state.line_count();
+        state.collapse_block();
+        assert_eq!(state.line_count(), once, "already hidden");
+        assert_valid(&state);
     }
 
     #[test]

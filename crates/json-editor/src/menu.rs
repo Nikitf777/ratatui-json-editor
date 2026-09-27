@@ -17,6 +17,9 @@ pub(crate) enum Action {
     MoveAcrossDown,
     EditValue,
     EditKey,
+    HideBlock,
+    ShowBlock,
+    ToggleBlock,
 }
 
 const FILE_MENU: &[(Action, &str)] = &[(Action::Save, "Save"), (Action::Quit, "Quit")];
@@ -30,7 +33,16 @@ const EDIT_MENU: &[(Action, &str)] = &[
     (Action::EditValue, "Edit value"),
     (Action::EditKey, "Edit key"),
 ];
-pub(crate) const MENUS: &[(&str, &[(Action, &str)])] = &[("File", FILE_MENU), ("Edit", EDIT_MENU)];
+const VIEW_MENU: &[(Action, &str)] = &[
+    (Action::HideBlock, "Hide block"),
+    (Action::ShowBlock, "Show block"),
+    (Action::ToggleBlock, "Toggle block"),
+];
+pub(crate) const MENUS: &[(&str, &[(Action, &str)])] = &[
+    ("File", FILE_MENU),
+    ("Edit", EDIT_MENU),
+    ("View", VIEW_MENU),
+];
 
 pub(crate) fn build_menu() -> MenuState<Action> {
     MenuState::new(

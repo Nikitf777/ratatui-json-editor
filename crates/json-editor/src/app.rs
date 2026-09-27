@@ -287,6 +287,15 @@ impl App {
             (Key::Char('K'), false, false, _) => {
                 self.do_move_up();
             }
+            (Key::Char('-'), false, false, _) => {
+                self.do_hide_block();
+            }
+            (Key::Char('+'), false, false, _) => {
+                self.do_show_block();
+            }
+            (Key::Char('*'), false, false, _) => {
+                self.do_toggle_block();
+            }
             (Key::Char('H'), false, false, _) => {
                 self.do_move_across_up();
             }
@@ -394,6 +403,40 @@ impl App {
         self.report(result);
     }
 
+    /// Hides the selected block. The document is untouched: only the tree gets
+    /// shorter. A block that is already hidden stays hidden, so this never
+    /// shows one — that is what `Show block` is for.
+    fn do_hide_block(&mut self) {
+        let hidden = self.state.is_collapsed();
+        self.state.collapse_block();
+        self.message = Some(if hidden {
+            "block is already hidden".to_string()
+        } else {
+            "block hidden".to_string()
+        });
+    }
+
+    /// Hides a block that is open and shows one that is hidden.
+    fn do_toggle_block(&mut self) {
+        if self.state.is_collapsed() {
+            self.do_show_block();
+        } else {
+            self.do_hide_block();
+        }
+    }
+
+    /// Shows the selected block again. Only the block under the cursor: the
+    /// blocks nested inside it keep whatever state they were left in.
+    fn do_show_block(&mut self) {
+        let shown = !self.state.is_collapsed();
+        self.state.expand_block();
+        self.message = Some(if shown {
+            "block is already shown".to_string()
+        } else {
+            "block shown".to_string()
+        });
+    }
+
     fn do_edit_value(&mut self) {
         self.state.select_value();
         self.begin_edit();
@@ -495,6 +538,9 @@ impl App {
                 Action::MoveAcrossDown => self.do_move_across_down(),
                 Action::EditValue => self.do_edit_value(),
                 Action::EditKey => self.do_edit_key(),
+                Action::HideBlock => self.do_hide_block(),
+                Action::ShowBlock => self.do_show_block(),
+                Action::ToggleBlock => self.do_toggle_block(),
             }
         }
         quit
@@ -664,6 +710,58 @@ mod tests {
         app.handle_key(key('H'));
         app.handle_key(key('H'));
         assert_eq!(root(&app), r#"{"a":{"b":1,"k":0},"nest":{"z":2}}"#);
+    }
+
+    #[test]
+    fn hide_and_show_keys_resize_the_tree_only() {
+        let mut app = editor(r#"{"a": {"x": 1, "y": 2}, "b": 3}"#);
+        let before = app.state.line_count();
+        app.handle_key(key('j'));
+        assert_eq!(app.state.cursor_path(), [0], "a");
+
+        app.handle_key(key('-'));
+        assert!(app.state.is_collapsed());
+        assert_eq!(app.state.line_count(), before - 3, "a's entries and its close");
+        assert_eq!(
+            root(&app),
+            r#"{"a":{"x":1,"y":2},"b":3}"#,
+            "the document keeps every entry"
+        );
+
+        // Hiding again is a no-op: the button only ever hides.
+        app.handle_key(key('-'));
+        assert!(app.state.is_collapsed(), "a second hide does not show it");
+        assert_eq!(app.state.line_count(), before - 3);
+
+        app.handle_key(key('+'));
+        assert!(!app.state.is_collapsed());
+        assert_eq!(app.state.line_count(), before);
+        assert_eq!(root(&app), r#"{"a":{"x":1,"y":2},"b":3}"#);
+
+        // Showing an open block is a no-op too.
+        app.handle_key(key('+'));
+        assert_eq!(app.state.line_count(), before);
+    }
+
+    #[test]
+    fn the_toggle_key_hides_and_shows() {
+        let mut app = editor(r#"{"a": {"x": 1, "y": 2}, "b": 3}"#);
+        let before = app.state.line_count();
+        app.handle_key(key('j'));
+        assert_eq!(app.state.cursor_path(), [0], "a");
+
+        app.handle_key(key('*'));
+        assert!(app.state.is_collapsed());
+        assert_eq!(app.state.line_count(), before - 3);
+
+        app.handle_key(key('*'));
+        assert!(!app.state.is_collapsed());
+        assert_eq!(app.state.line_count(), before);
+        assert_eq!(
+            root(&app),
+            r#"{"a":{"x":1,"y":2},"b":3}"#,
+            "the document is untouched either way"
+        );
     }
 
     #[test]

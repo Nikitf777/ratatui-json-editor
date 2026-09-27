@@ -78,7 +78,7 @@ impl StatefulWidget for &JsonEditor {
             return;
         }
         let height = area.height as usize;
-        let rows = flatten(state.root());
+        let rows = flatten(state.root(), state.collapsed_paths());
 
         match self.scroll_mode {
             ScrollMode::FollowCursor => state.ensure_cursor_visible(height),
@@ -167,6 +167,7 @@ fn render_row(row: &Row, theme: &Theme, highlight: Highlight) -> Vec<Span<'stati
             key,
             is_object,
             empty,
+            collapsed,
         } => {
             if let Some(key) = key {
                 push_key(&mut spans, key, theme, key_on, whole);
@@ -175,6 +176,13 @@ fn render_row(row: &Row, theme: &Theme, highlight: Highlight) -> Vec<Span<'stati
             if *empty {
                 spans.push(Span::styled(
                     format!("{open}{close}"),
+                    patch(theme.punct, value_on, theme),
+                ));
+                push_comma(&mut spans, row.comma, theme, whole);
+            } else if *collapsed {
+                // A hidden block stands for everything inside it.
+                spans.push(Span::styled(
+                    format!("{open}...{close}"),
                     patch(theme.punct, value_on, theme),
                 ));
                 push_comma(&mut spans, row.comma, theme, whole);
@@ -262,6 +270,21 @@ mod tests {
         let theme = Theme::default();
         assert_eq!(buf[(2, 1)].style().fg, theme.key.fg);
         assert_eq!(buf[(8, 1)].style().fg, theme.string.fg);
+    }
+
+    #[test]
+    fn renders_a_hidden_block_as_ellipsis() {
+        let mut state = JsonEditorState::parse(r#"{"a": {"x": 1, "y": 2}, "b": 3}"#).unwrap();
+        state.select_down();
+        state.collapse_block();
+        let buf = render(&mut state, 30, 5);
+        let text = text(&buf);
+        assert!(text.contains("\"a\": {...}"), "{text:?}");
+        assert!(!text.contains("\"x\""), "the entries are not drawn");
+        assert!(!text.contains("\"y\""), "the entries are not drawn");
+        // b and the root's own close are still there.
+        assert!(text.contains("\"b\": 3"), "{text:?}");
+        assert!(state.line_count() == 4, "three rows plus the root's close");
     }
 
     #[test]
