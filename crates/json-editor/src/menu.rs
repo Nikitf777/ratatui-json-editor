@@ -13,6 +13,8 @@ pub(crate) enum Action {
     Delete,
     MoveUp,
     MoveDown,
+    MoveAcrossUp,
+    MoveAcrossDown,
     EditValue,
     EditKey,
 }
@@ -23,6 +25,8 @@ const EDIT_MENU: &[(Action, &str)] = &[
     (Action::Delete, "Delete entry"),
     (Action::MoveUp, "Move entry up"),
     (Action::MoveDown, "Move entry down"),
+    (Action::MoveAcrossUp, "Move across up"),
+    (Action::MoveAcrossDown, "Move across down"),
     (Action::EditValue, "Edit value"),
     (Action::EditKey, "Edit key"),
 ];

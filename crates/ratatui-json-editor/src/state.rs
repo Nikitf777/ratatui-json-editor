@@ -20,7 +20,7 @@
 //! construction.
 
 use crate::json::{quote_string, Json, ParseError};
-use crate::tree::{field_spans, flatten, row_width, RowContent};
+use crate::tree::{field_spans, flatten, row_width, Row, RowContent};
 
 /// Why an editing operation was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -353,6 +353,244 @@ impl JsonEditorState {
         self.move_entry(true)
     }
 
+    /// Moves the selected entry across the line above it, into whatever that
+    /// line holds: a sibling property, the object above, or — for the first
+    /// entry of an object — a place beside that object.
+    ///
+    /// Unlike [`JsonEditorState::move_entry_up`], which only reorders among
+    /// siblings, this can change the entry's parent. A property keeps its key,
+    /// so it can only be taken in by another object; meeting an array is
+    /// refused.
+    pub fn move_entry_across_up(&mut self) -> Result<(), EditError> {
+        self.move_across(false)
+    }
+
+    /// Moves the selected entry across the line below it, into whatever that
+    /// line holds: a sibling property, the object below, or — for the last
+    /// entry of an object — a place beside that object.
+    ///
+    /// Unlike [`JsonEditorState::move_entry_down`], which only reorders among
+    /// siblings, this can change the entry's parent. A property keeps its key,
+    /// so it can only be taken in by another object; meeting an array is
+    /// refused.
+    pub fn move_entry_across_down(&mut self) -> Result<(), EditError> {
+        self.move_across(true)
+    }
+
+    /// Moving an entry across a line, which may or may not change its parent.
+    ///
+    /// The line over in the given direction decides what happens, walking the
+    /// rendered lines the same way the cursor walks them and passing over any
+    /// container on the way:
+    ///
+    /// * the nearest property above or below that is a container takes the
+    ///   entry in, as its last or first child;
+    /// * otherwise a free slot among the siblings is filled, so the move is a
+    ///   plain reorder;
+    /// * otherwise, for the first or last entry of an object, the entry leaves
+    ///   that object and takes its place beside it.
+    ///
+    /// Array items need no key, so they move through arrays and objects
+    /// alike. A property keeps its key, so one can only be taken in by another
+    /// object; meeting an array is refused.
+    fn move_across(&mut self, down: bool) -> Result<(), EditError> {
+        if self.cursor.is_empty() {
+            return Err(EditError::Refused("cannot move the root value"));
+        }
+        let cursor = self.cursor.clone();
+        let index = *cursor.last().unwrap();
+        let parent_path = &cursor[..cursor.len() - 1];
+        let property = matches!(node_at(&self.root, parent_path), Json::Object(_));
+        let refuse = || {
+            // The document's own object has no line outside it, so its first
+            // and last entries are the document's own edges.
+            if property && parent_path.is_empty() {
+                return EditError::Refused(if down {
+                    "already the last entry of the document"
+                } else {
+                    "already the first entry of the document"
+                });
+            }
+            EditError::Refused(if property {
+                if down {
+                    "already the last entry of this object, with no property below to move into"
+                } else {
+                    "already the first entry of this object, with no property above to move into"
+                }
+            } else if down {
+                "already the last entry, with no property below to move into"
+            } else {
+                "already the first entry, with no property above to move into"
+            })
+        };
+        // A neighbouring property that can hold the entry takes it in, even
+        // where a sibling slot is free: moving between objects is what these
+        // operations are for.
+        if let Some(across) = self.container_across(&cursor, down)
+            && across != parent_path
+        {
+            let count = child_count(node_at(&self.root, &across));
+            let slot = if down { 0 } else { count };
+            let r = self.transfer(&cursor, &across, slot, &refuse);
+            return r;
+        }
+        // Otherwise a free slot among the siblings is a plain move.
+        let len = child_count(node_at(&self.root, parent_path));
+        if let Some(slot) = if down {
+            (index + 1 < len).then_some(index + 1)
+        } else {
+            index.checked_sub(1)
+        } {
+            self.swap_entry(parent_path, index, slot);
+            return Ok(());
+        }
+        // With no neighbour to adopt it, the entry leaves the object it is in
+        // and takes its place beside it — but only when that object is a
+        // property of another. The document's own object has no line outside
+        // it, so its first and last entries are the document's edges.
+        if parent_path.is_empty() {
+            return Err(refuse());
+        }
+        let slot = *parent_path.last().unwrap() + usize::from(down);
+        let grandparent = parent_path[..parent_path.len() - 1].to_vec();
+        self.transfer(&cursor, &grandparent, slot, &refuse)
+    }
+
+    /// Moves the entry at `cursor` into the container at `target`, at slot
+    /// `index`. The entry leaves the document first, and the slot is worked out
+    /// from the tree as it is then — the only shape that can be indexed into
+    /// safely.
+    fn transfer(
+        &mut self,
+        cursor: &[usize],
+        target: &[usize],
+        index: usize,
+        refuse: &impl Fn() -> EditError,
+    ) -> Result<(), EditError> {
+        let property = matches!(
+            node_at(&self.root, &cursor[..cursor.len() - 1]),
+            Json::Object(_)
+        );
+        if property && matches!(node_at(&self.root, target), Json::Array(_)) {
+            return Err(EditError::Refused(
+                "a property keeps its key, so it cannot move into an array",
+            ));
+        }
+        // The place the entry is going must be a container, and checking it
+        // before anything moves leaves the document untouched if it is not.
+        if !matches!(node_at(&self.root, target), Json::Array(_) | Json::Object(_)) {
+            return Err(refuse());
+        }
+        let (mut key, value) = detach(&mut self.root, cursor);
+        // The removal shifts every index after it among the same siblings, so
+        // where the entry lands is worked out on the smaller tree.
+        let target = shift_after_removal(target, cursor);
+        if !matches!(node_at(&self.root, &target), Json::Array(_) | Json::Object(_)) {
+            return Err(refuse());
+        }
+        // An array item takes a name from its own text when it lands in an
+        // object; a property brings its key along.
+        if key.is_none() && matches!(node_at(&self.root, &target), Json::Object(_)) {
+            key = Some(expose_value(&value).trim().to_string());
+        }
+        let index = index.min(child_count(node_at(&self.root, &target)));
+        let child = child_path(&target, index);
+        attach(&mut self.root, &target, index, key, value);
+        self.cursor = child;
+        self.clamp_field();
+        Ok(())
+    }
+
+    /// Swaps two entries of the container at `path` and leaves the cursor on
+    /// the one that moved.
+    fn swap_entry(&mut self, path: &[usize], from: usize, to: usize) {
+        match node_at_mut(&mut self.root, path) {
+            Some(Json::Array(items)) => items.swap(from, to),
+            Some(Json::Object(entries)) => entries.swap(from, to),
+            _ => return,
+        }
+        let mut cursor = path.to_vec();
+        cursor.push(to);
+        self.cursor = cursor;
+        self.clamp_field();
+    }
+
+    /// The nearest property line over in `direction` from the object at
+    /// `parent_path` whose value can take an entry. Lines that cannot are
+    /// passed over: closing brackets, scalars, and — for an entry with a key
+    /// — arrays, which have no keys to keep it in.
+    fn container_across(&self, cursor: &[usize], down: bool) -> Option<Vec<usize>> {
+        let with_key = matches!(node_at(&self.root, &cursor[..cursor.len() - 1]), Json::Object(_));
+        let parent_path = &cursor[..cursor.len() - 1];
+        let lines = flatten(&self.root);
+        let is_close = |row: &Row| matches!(row.content, RowContent::Close { .. });
+        // The line the search starts from. Up steps off the container's own
+        // line; down steps past the closing bracket that follows its children.
+        // The document's own object is the exception: its entries are rendered
+        // inside its line, so the search starts among them, and running past
+        // either end means there is nothing left to find.
+        let from = if parent_path.is_empty() {
+            let index = cursor.last().copied().unwrap_or(0);
+            let count = child_count(&self.root);
+            if down {
+                if index + 1 == count {
+                    return None;
+                }
+                lines
+                    .iter()
+                    .position(|row| row.path == vec![index + 1] && !is_close(row))?
+            } else {
+                if index == 0 {
+                    return None;
+                }
+                lines
+                    .iter()
+                    .position(|row| row.path == vec![index - 1] && !is_close(row))?
+            }
+        } else {
+            let own = lines
+                .iter()
+                .position(|row| row.path == *parent_path && !is_close(row))?;
+            if !down {
+                own.checked_sub(1)?
+            } else {
+                match lines[own + 1..]
+                    .iter()
+                    .position(|row| row.path == *parent_path && is_close(row))
+                {
+                    Some(offset) => own + offset + 2,
+                    None => own + 1,
+                }
+            }
+        };
+        // Lines that cannot hold the entry are passed over: closing brackets,
+        // scalars, and — for an entry with a key — arrays.
+        let candidates = if down { lines.get(from..)? } else { &lines[..=from] };
+        let line = if down {
+            candidates.iter().find(|row| self.can_hold(row, with_key))?
+        } else {
+            candidates.iter().rev().find(|row| self.can_hold(row, with_key))?
+        };
+        Some(line.path.clone())
+    }
+
+    /// Whether a rendered line is a property whose value can take an entry. A
+    /// property keeps its key, so only another object can hold it.
+    fn can_hold(&self, row: &Row, with_key: bool) -> bool {
+        let has_key = match &row.content {
+            RowContent::Container { key, .. } | RowContent::Scalar { key, .. } => key.is_some(),
+            RowContent::Close { .. } => false,
+        };
+        if !has_key {
+            return false;
+        }
+        match node_at(&self.root, &row.path) {
+            Json::Object(_) => true,
+            Json::Array(_) => !with_key,
+            _ => false,
+        }
+    }
+
     fn move_entry(&mut self, down: bool) -> Result<(), EditError> {
         if self.cursor.is_empty() {
             return Err(EditError::Refused("cannot reorder the root value"));
@@ -577,6 +815,15 @@ fn node_at<'a>(root: &'a Json, path: &[usize]) -> &'a Json {
     node
 }
 
+/// The object entry at `path` with its key, or `None` when the path is not
+/// one — array items and the root have no key.
+fn take_entry(node: &mut Json, index: usize) -> Option<(String, Json)> {
+    match node {
+        Json::Object(entries) => Some(entries.remove(index)),
+        _ => None,
+    }
+}
+
 fn node_at_mut<'a>(root: &'a mut Json, path: &[usize]) -> Option<&'a mut Json> {
     let mut node = root;
     for &index in path {
@@ -616,6 +863,51 @@ fn unique_key(entries: &[(String, Json)]) -> String {
         .map(|n| format!("new{n}"))
         .find(|candidate| !entries.iter().any(|(key, _)| key == candidate))
         .unwrap()
+}
+
+/// The path to the same place once the entry at `removed` has been taken out
+/// of the document: every index that pointed past it in the same parent moves
+/// down one.
+fn shift_after_removal(path: &[usize], removed: &[usize]) -> Vec<usize> {
+    // Only a target that was a sibling of the removed entry moves; anything
+    // in another container keeps its path.
+    if path.len() != removed.len() || path[..path.len() - 1] != removed[..removed.len() - 1] {
+        return path.to_vec();
+    }
+    let mut shifted = path.to_vec();
+    let last = shifted.len() - 1;
+    if shifted[last] > removed[last] {
+        shifted[last] -= 1;
+    }
+    shifted
+}
+
+/// Removes the entry at `path` from the document. Object entries hand back
+/// their key so it can be carried along; array items have none.
+fn detach(root: &mut Json, path: &[usize]) -> (Option<String>, Json) {
+    let Some((parent, index)) = parent_of(root, path) else {
+        return (None, Json::Null);
+    };
+    if let Some(entry) = take_entry(parent, index) {
+        return (Some(entry.0), entry.1);
+    }
+    match parent {
+        Json::Array(items) => (None, items.remove(index)),
+        _ => (None, Json::Null),
+    }
+}
+
+/// Puts a detached entry into the container at `parent_path` before its
+/// entries. A property needs an object to hold its key; the caller has
+/// checked that already.
+fn attach(root: &mut Json, parent_path: &[usize], index: usize, key: Option<String>, value: Json) {
+    match node_at_mut(root, parent_path) {
+        Some(Json::Object(entries)) => {
+            entries.insert(index, (key.unwrap_or_default(), value));
+        }
+        Some(Json::Array(items)) => items.insert(index, value),
+        _ => {}
+    }
 }
 
 /// The closing characters missing from `text` when it ends inside a string or
@@ -798,6 +1090,15 @@ mod tests {
     /// Editable field text, for brevity in the tests.
     fn entry(value: &str) -> String {
         value.to_string()
+    }
+
+    /// A state whose cursor is on `path`, so tests do not have to count
+    /// `select_down` presses through the tree.
+    fn at(src: &str, path: &[usize]) -> JsonEditorState {
+        let mut state = doc(src);
+        state.cursor = path.to_vec();
+        state.clamp_field();
+        state
     }
 
     fn assert_valid(state: &JsonEditorState) {
@@ -997,6 +1298,185 @@ mod tests {
         assert_eq!(state.root(), &Json::parse("[1, 3]").unwrap());
         assert_eq!(state.cursor_path(), [1]);
         assert_valid(&state);
+    }
+
+    #[test]
+    fn moving_across_swaps_among_siblings() {
+        // A free sibling slot makes it a plain reorder first.
+        let mut state = at(r#"{"a": 1, "b": 2, "c": 3}"#, &[0]);
+        state.move_entry_across_down().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"b": 2, "a": 1, "c": 3}"#).unwrap(),
+            "a takes b's place, keeping its own name and value"
+        );
+        assert_eq!(state.cursor_path(), [1]);
+
+        // With none, the next property takes the entry in.
+        let mut state = at(r#"{"a": 1, "b": {"k": 0}, "c": 3}"#, &[0]);
+        state.move_entry_across_down().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"b": {"a": 1, "k": 0}, "c": 3}"#).unwrap()
+        );
+        assert_eq!(state.cursor_path(), [0, 0]);
+        assert_valid(&state);
+
+        // Up takes the property above, as its last child.
+        let mut state = at(r#"{"a": {"k": 0}, "b": 1, "c": 3}"#, &[1]);
+        state.move_entry_across_up().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"a": {"k": 0, "b": 1}, "c": 3}"#).unwrap()
+        );
+        assert_eq!(state.cursor_path(), [0, 1]);
+        assert_valid(&state);
+    }
+
+    #[test]
+    fn moving_across_can_leave_an_object_entirely() {
+        // No neighbour can hold it, so it leaves the object entirely.
+        let mut state = at(r#"{"a": 1, "nest": {"x": 1, "y": 2}, "b": 3}"#, &[1, 1]);
+        state.move_entry_across_down().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"a": 1, "nest": {"x": 1}, "y": 2, "b": 3}"#).unwrap(),
+            "y takes its place after the object it left"
+        );
+        assert_eq!(state.cursor_path(), [2]);
+        assert_valid(&state);
+
+        let mut state = at(r#"{"a": 1, "nest": {"x": 1, "y": 2}, "b": 3}"#, &[1, 0]);
+        state.move_entry_across_up().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"a": 1, "x": 1, "nest": {"y": 2}, "b": 3}"#).unwrap(),
+            "x lands before the object it left"
+        );
+        assert_eq!(state.cursor_path(), [1]);
+        assert_valid(&state);
+
+        // Out of a nested object, one level further up.
+        let mut state = at(r#"{"deep": {"inner": {"k": 1}, "j": 2}, "z": 3}"#, &[0, 0, 0]);
+        state.move_entry_across_down().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"deep": {"inner": {}, "k": 1, "j": 2}, "z": 3}"#).unwrap(),
+            "out of a nested object, k lands beside inner, as a child of deep"
+        );
+        assert_valid(&state);
+    }
+
+    #[test]
+    fn moving_across_moves_array_items_too() {
+        // The last item of an array moves into the array next door.
+        let mut state = at(r#"{"arr": [1, 2], "other": [9]}"#, &[0, 1]);
+        state.move_entry_across_down().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"arr": [1], "other": [2, 9]}"#).unwrap()
+        );
+        assert_eq!(state.cursor_path(), [1, 0]);
+        assert_valid(&state);
+
+        // Into an object, the item is named after the text it holds.
+        let mut state = at(r#"{"arr": [1, 2], "obj": {"x": 1}}"#, &[0, 1]);
+        state.move_entry_across_down().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"arr": [1], "obj": {"2": 2, "x": 1}}"#).unwrap()
+        );
+        assert_valid(&state);
+
+        // Out of an array with a free sibling slot, that is a plain move.
+        let mut state = at(r#"[1, 2]"#, &[0]);
+        state.move_entry_across_down().unwrap();
+        assert_eq!(state.root(), &Json::parse("[2, 1]").unwrap());
+    }
+
+    #[test]
+    fn moving_across_moves_a_whole_object() {
+        // The document's own object has nothing outside it, so its edges are
+        // the document's.
+        let mut state = at(r#"{"a": {"x": 1}, "b": 2}"#, &[0]);
+        assert_eq!(
+            state.move_entry_across_up(),
+            Err(EditError::Refused("already the first entry of the document"))
+        );
+        // The last entry of the document has no line to leave for either.
+        let mut state = at(r#"{"a": 1, "b": 2}"#, &[1]);
+        assert_eq!(
+            state.move_entry_across_down(),
+            Err(EditError::Refused("already the last entry of the document"))
+        );
+        // A lone entry is the document's only line, so it stays put and says
+        // why rather than vanishing.
+        let mut state = at(r#"{"a": {"x": 1}}"#, &[0]);
+        assert_eq!(
+            state.move_entry_across_down(),
+            Err(EditError::Refused("already the last entry of the document"))
+        );
+        assert_eq!(state.root(), &Json::parse(r#"{"a": {"x": 1}}"#).unwrap());
+
+        // A container below takes it in.
+        let mut state = at(r#"{"top": {"a": {"x": 1}}, "b": {"k": 0}}"#, &[0, 0]);
+        state.move_entry_across_down().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"top": {}, "b": {"a": {"x": 1}, "k": 0}}"#).unwrap()
+        );
+        assert_eq!(state.cursor_path(), [1, 0]);
+        assert_valid(&state);
+    }
+
+    #[test]
+    fn moving_across_at_the_edges_explains_itself() {
+        // A property of the root object cannot leave it: the document has no
+        // line outside.
+        let mut state = doc(r#"{"a": 1, "b": 2}"#);
+        state.select_down();
+        assert_eq!(
+            state.move_entry_across_up(),
+            Err(EditError::Refused("already the first entry of the document"))
+        );
+        state.select_down();
+        assert_eq!(
+            state.move_entry_across_down(),
+            Err(EditError::Refused("already the last entry of the document"))
+        );
+        assert_eq!(state.root(), &Json::parse(r#"{"a": 1, "b": 2}"#).unwrap());
+
+        // A property cannot land in an array, which has no keys: it passes
+        // over and leaves the object instead.
+        let mut state = at(r#"{"obj": {"x": 1}, "arr": [1]}"#, &[0, 0]);
+        state.move_entry_across_down().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"obj": {}, "x": 1, "arr": [1]}"#).unwrap(),
+            "the array cannot hold a property, so x leaves obj for the slot before it"
+        );
+        assert_valid(&state);
+
+        // Nothing above a lone object's first entry, so it lifts out of it
+        // and lands beside the object.
+        let mut state = at(r#"{"a": {"x": 1}, "z": 9}"#, &[0, 0]);
+        state.move_entry_across_up().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"x": 1, "a": {}, "z": 9}"#).unwrap(),
+            "x leaves a, landing before it"
+        );
+        assert_valid(&state);
+
+        let mut state = at(r#"{"a": {"x": 1}}"#, &[0, 0]);
+        assert_eq!(
+            state.move_entry_across_up(),
+            Ok(()),
+            "x lifts out of a, which is the document's own object"
+        );
+        // Down from there puts x back where it was among a's own entries.
+        assert_eq!(state.move_entry_across_down(), Ok(()), "x joins a again");
+        assert_eq!(state.root(), &Json::parse(r#"{"a": {"x": 1}}"#).unwrap());
     }
 
     #[test]

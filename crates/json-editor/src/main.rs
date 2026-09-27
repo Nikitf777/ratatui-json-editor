@@ -39,8 +39,9 @@
 //! j/k or ↓/↑   select down / up             h/l or ←/→  select left / right
 //! e / r        edit value / edit key        a           add entry (key first)
 //! d or x       delete entry                 J / K       reorder among siblings
-//! PgUp/PgDn    scroll                       Ctrl+S      save
-//! F10          menu bar (File / Edit)       q / Esc     quit (saving the result)
+//! H / L        move across the line above / below (into another object)
+//! PgUp/PgDn    scroll                       F10         menu bar (File / Edit)
+//! q / Esc      quit (saving the result)      Ctrl+S      save
 //! ```
 //!
 //! Keys in edit mode: typing through `ratatui-textarea` (undo/redo, word

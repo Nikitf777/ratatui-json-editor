@@ -287,6 +287,12 @@ impl App {
             (Key::Char('K'), false, false, _) => {
                 self.do_move_up();
             }
+            (Key::Char('H'), false, false, _) => {
+                self.do_move_across_up();
+            }
+            (Key::Char('L'), false, false, _) => {
+                self.do_move_across_down();
+            }
             (Key::PageDown, false, false, _) => {
                 let top = self.state.scroll() + self.view_height / 2;
                 self.state.set_scroll(top);
@@ -373,6 +379,18 @@ impl App {
 
     fn do_move_down(&mut self) {
         let result = self.state.move_entry_down();
+        self.report(result);
+    }
+
+    /// Moves the entry across the line above it, which may take it into
+    /// another object rather than just past a sibling.
+    fn do_move_across_up(&mut self) {
+        let result = self.state.move_entry_across_up();
+        self.report(result);
+    }
+
+    fn do_move_across_down(&mut self) {
+        let result = self.state.move_entry_across_down();
         self.report(result);
     }
 
@@ -473,6 +491,8 @@ impl App {
                 Action::Delete => self.do_delete(),
                 Action::MoveUp => self.do_move_up(),
                 Action::MoveDown => self.do_move_down(),
+                Action::MoveAcrossUp => self.do_move_across_up(),
+                Action::MoveAcrossDown => self.do_move_across_down(),
                 Action::EditValue => self.do_edit_value(),
                 Action::EditKey => self.do_edit_key(),
             }
@@ -589,4 +609,72 @@ fn scroll_event(mouse: MouseEvent) -> Option<ScrollEvent> {
         _ => return None,
     };
     Some(event)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn editor(src: &str) -> App {
+        let state = JsonEditorState::parse(src).unwrap();
+        App::new(state, None, Config::default(), false)
+    }
+
+    fn key(c: char) -> Input {
+        Input {
+            key: Key::Char(c),
+            ctrl: false,
+            alt: false,
+            shift: false,
+        }
+    }
+
+    fn root(app: &App) -> String {
+        let mut out = String::new();
+        app.state.root().write_compact(&mut out);
+        out
+    }
+
+    #[test]
+    fn move_keys_reorder_among_siblings() {
+        let mut app = editor(r#"{"a":1,"b":2,"c":3}"#);
+        app.handle_key(key('j'));
+        app.handle_key(key('J'));
+        assert_eq!(root(&app), r#"{"b":2,"a":1,"c":3}"#);
+        app.handle_key(key('K'));
+        assert_eq!(root(&app), r#"{"a":1,"b":2,"c":3}"#);
+    }
+
+    #[test]
+    fn move_across_keys_change_the_parent() {
+        // H and L move the entry into the neighbouring object, rather than
+        // only past a sibling.
+        let mut app = editor(r#"{"a": 1, "b": {"k": 0}, "c": 3}"#);
+        app.handle_key(key('j'));
+        app.handle_key(key('L'));
+        assert_eq!(root(&app), r#"{"b":{"a":1,"k":0},"c":3}"#);
+
+        // Up into the object above: b is the first entry of nest, and the
+        // line above nest is a, which can hold it.
+        let mut app = editor(r#"{"a":{"k":0},"nest":{"b":1,"z":2}}"#);
+        for _ in 0..4 {
+            app.handle_key(key('j'));
+        }
+        assert_eq!(app.state.cursor_path(), [1, 0], "b, the first entry of nest");
+        app.handle_key(key('H'));
+        app.handle_key(key('H'));
+        assert_eq!(root(&app), r#"{"a":{"b":1,"k":0},"nest":{"z":2}}"#);
+    }
+
+    #[test]
+    fn a_refused_move_leaves_the_document_alone() {
+        let mut app = editor(r#"{"a":1,"b":2}"#);
+        for _ in 0..2 {
+            app.handle_key(key('j'));
+        }
+        assert_eq!(app.state.cursor_path(), [1], "b, the document's last line");
+        app.handle_key(key('L'));
+        assert_eq!(root(&app), r#"{"a":1,"b":2}"#, "there is nowhere to go");
+        assert!(app.message.is_some(), "the reason is shown");
+    }
 }
