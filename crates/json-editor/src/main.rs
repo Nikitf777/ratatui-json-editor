@@ -40,9 +40,9 @@
 //! never inherits the modifiers of its default — `[{"key": "w"}]` for save is
 //! a plain `w`, not `Ctrl+W`. A terminal sends `J`, `K` and `+` with Shift
 //! held, so a binding using one needs `"shift": true`. An action with no entry
-//! keeps its default. Names: `save`, `quit`, `add`,
-//! `delete`, `move_up`, `move_down`, `move_across_up`, `move_across_down`,
-//! `edit_value`, `edit_key`, `hide_block`, `show_block`, `toggle_block`,
+//! keeps its default. Names: `save`, `quit`, `add`, `duplicate`, `delete`,
+//! `move_up`, `move_down`, `move_across_up`, `move_across_down`, `edit_value`,
+//! `edit_key`, `hide_block`, `show_block`, `toggle_block`,
 //! `select_up`, `select_down`, `select_left`, `select_right`, `select_line_up`,
 //! `select_line_down`, `select_word_left`, `select_word_right`,
 //! `select_first`, `select_last`, `page_up`, `page_down`, `edit_field` and
@@ -61,11 +61,12 @@
 //! Enter / Shift+Enter  select down / up     Tab / Shift+Tab  select left / right
 //! j/k or ↓/↑   select down / up             h/l or ←/→  select left / right
 //! e / r        edit value / edit key        a           add entry (key first)
-//! d or x       delete entry                 J / K       reorder among siblings
+//! d or x       delete entry                 Ctrl+D      duplicate entry
 //! H / L        move across the line above / below (into another object)
+//! J / K        reorder among siblings        Ctrl+S      save
 //! - / + / *    hide / show / toggle the block under the cursor
 //! PgUp/PgDn    scroll                       F10         menu bar (File / Edit)
-//! q / Esc      quit (saving the result)      Ctrl+S      save
+//! q / Esc      quit (saving the result)
 //! ```
 //!
 //! Keys in edit mode: typing through `ratatui-textarea` (undo/redo, word

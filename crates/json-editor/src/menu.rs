@@ -12,6 +12,7 @@ pub(crate) enum Action {
     Save,
     Quit,
     Add,
+    Duplicate,
     Delete,
     MoveUp,
     MoveDown,
@@ -46,6 +47,7 @@ impl Action {
             Action::Save,
             Action::Quit,
             Action::Add,
+            Action::Duplicate,
             Action::Delete,
             Action::MoveUp,
             Action::MoveDown,
@@ -77,6 +79,7 @@ impl Action {
 const FILE_MENU: &[(Action, &str)] = &[(Action::Save, "Save"), (Action::Quit, "Quit")];
 const EDIT_MENU: &[(Action, &str)] = &[
     (Action::Add, "Add entry"),
+    (Action::Duplicate, "Duplicate entry"),
     (Action::Delete, "Delete entry"),
     (Action::MoveUp, "Move entry up"),
     (Action::MoveDown, "Move entry down"),

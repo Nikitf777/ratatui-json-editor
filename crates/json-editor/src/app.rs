@@ -307,6 +307,10 @@ impl App {
                 self.do_delete();
                 false
             }
+            Action::Duplicate => {
+                self.do_duplicate();
+                false
+            }
             Action::MoveUp => {
                 self.do_move_up();
                 false
@@ -454,6 +458,12 @@ impl App {
             self.state.select_key();
             self.begin_edit();
         }
+    }
+
+    /// Copies the selected entry into a new one beside it.
+    fn do_duplicate(&mut self) {
+        let result = self.state.duplicate_entry();
+        self.report(result);
     }
 
     fn do_delete(&mut self) {
@@ -754,6 +764,15 @@ mod tests {
         }
     }
 
+    fn ctrl_key(c: char) -> Input {
+        Input {
+            key: Key::Char(c),
+            ctrl: true,
+            alt: false,
+            shift: false,
+        }
+    }
+
     /// What a terminal sends for a capital letter: the character is already
     /// upper case, and Shift is reported as held.
     fn shift_key(c: char) -> Input {
@@ -779,6 +798,23 @@ mod tests {
         assert_eq!(root(&app), r#"{"b":2,"a":1,"c":3}"#);
         app.handle_key(shift_key('K'));
         assert_eq!(root(&app), r#"{"a":1,"b":2,"c":3}"#);
+    }
+
+    #[test]
+    fn ctrl_d_duplicates_the_selected_entry() {
+        let mut app = editor(r#"{"a": 1, "b": 2}"#);
+        app.handle_key(key('j'));
+        assert_eq!(app.state.cursor_path(), [0], "a");
+        app.handle_key(ctrl_key('d'));
+        assert_eq!(
+            root(&app),
+            r#"{"a":1,"a copy":1,"b":2}"#,
+            "Ctrl+D copies it, and plain d still deletes"
+        );
+
+        // The copy is selected, so plain d would delete the copy.
+        app.handle_key(key('d'));
+        assert_eq!(root(&app), r#"{"a":1,"b":2}"#);
     }
 
     #[test]

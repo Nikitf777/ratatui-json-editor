@@ -347,6 +347,42 @@ impl JsonEditorState {
         Ok(())
     }
 
+    /// Copies the selected entry into a new one right after it, and selects
+    /// the copy's key, ready to be renamed. The value is copied as it stands,
+    /// so a container comes along whole.
+    ///
+    /// A property cannot keep the same name, so the copy is given one that is
+    /// not taken: `a` becomes `a copy`, and duplicating that gives
+    /// `a copy copy`. An array item needs no name and is simply copied. The
+    /// root value cannot be duplicated, since a document has only one.
+    pub fn duplicate_entry(&mut self) -> Result<(), EditError> {
+        if self.cursor.is_empty() {
+            return Err(EditError::Refused("cannot duplicate the root value"));
+        }
+        let cursor = self.cursor.clone();
+        let index = *cursor.last().unwrap();
+        let slot = index + 1;
+        let Some((parent, _)) = parent_of(&mut self.root, &cursor) else {
+            return Err(EditError::Refused("cannot duplicate this node"));
+        };
+        match parent {
+            Json::Array(items) => items.insert(slot, items[index].clone()),
+            Json::Object(entries) => {
+                // The value is cloned before the key is taken, so borrowing
+                // both at once does not fight over the vector.
+                let (key, value) = entries[index].clone();
+                let key = free_key(entries, &key);
+                entries.insert(slot, (key, value));
+            }
+            _ => return Err(EditError::Refused("cannot duplicate this node")),
+        }
+        self.cursor = child_path(&cursor[..cursor.len() - 1], slot);
+        // The copy's name is the part that needs attention, so start there.
+        // An array item has no key, and the clamp leaves its value selected.
+        self.select_key();
+        Ok(())
+    }
+
     /// Moves the selected entry one position earlier among its siblings.
     pub fn move_entry_up(&mut self) -> Result<(), EditError> {
         self.move_entry(false)
@@ -936,6 +972,19 @@ fn shift_after_removal(path: &[usize], removed: &[usize]) -> Vec<usize> {
         shifted[last] -= 1;
     }
     shifted
+}
+
+/// A key close to `base` that no entry uses: `a`, then `a copy`,
+/// `a copy copy`.
+fn free_key(entries: &[(String, Json)], base: &str) -> String {
+    let taken = |key: &str| entries.iter().any(|(other, _)| other == key);
+    if !taken(&format!("{base} copy")) {
+        return format!("{base} copy");
+    }
+    (2..)
+        .map(|n| format!("{base} copy {n}"))
+        .find(|candidate| !taken(candidate))
+        .unwrap()
 }
 
 /// Removes the entry at `path` from the document. Object entries hand back
@@ -1607,6 +1656,72 @@ mod tests {
         state.collapse_block();
         assert_eq!(state.line_count(), once, "already hidden");
         assert_valid(&state);
+    }
+
+    #[test]
+    fn duplicating_an_entry_copies_it_next_to_itself() {
+        let mut state = doc(r#"{"a": 1, "b": 2}"#);
+        state.select_down();
+        state.duplicate_entry().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"a": 1, "a copy": 1, "b": 2}"#).unwrap(),
+            "the copy needs a name of its own"
+        );
+        assert_eq!(state.cursor_path(), [1], "the copy is selected");
+        assert_eq!(state.selected_field(), Field::Key, "ready to be renamed");
+
+        // The copy's key can be edited straight away, which is why it is the
+        // selected field.
+        assert_eq!(state.edit(), "a copy");
+        state.commit(entry("renamed")).unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"a": 1, "renamed": 1, "b": 2}"#).unwrap(),
+            "committing renames the copy in place"
+        );
+        assert_valid(&state);
+
+        // Duplicating the copy again keeps the names apart.
+        state.duplicate_entry().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"a": 1, "renamed": 1, "renamed copy": 1, "b": 2}"#).unwrap(),
+            "the copy of \"renamed\" is named after it"
+        );
+        assert_eq!(state.cursor_path(), [2]);
+        assert_valid(&state);
+
+        // A container comes along whole.
+        let mut state = doc(r#"{"a": {"x": [1]}}"#);
+        state.select_down();
+        state.duplicate_entry().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"a": {"x": [1]}, "a copy": {"x": [1]}}"#).unwrap()
+        );
+        assert_valid(&state);
+    }
+
+    #[test]
+    fn duplicating_an_array_item_needs_no_name() {
+        let mut state = doc("[1, 2]");
+        state.select_down();
+        state.duplicate_entry().unwrap();
+        assert_eq!(state.root(), &Json::parse("[1, 1, 2]").unwrap());
+        assert_eq!(state.cursor_path(), [1], "the copy is selected");
+        assert_eq!(state.selected_field(), Field::Value, "an item has no key");
+        assert_valid(&state);
+    }
+
+    #[test]
+    fn the_root_cannot_be_duplicated() {
+        let mut state = doc(r#"{"a": 1}"#);
+        assert_eq!(
+            state.duplicate_entry(),
+            Err(EditError::Refused("cannot duplicate the root value"))
+        );
+        assert_eq!(state.root(), &Json::parse(r#"{"a": 1}"#).unwrap());
     }
 
     #[test]
