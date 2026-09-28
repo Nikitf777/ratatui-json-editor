@@ -16,8 +16,8 @@ use tui_scrollbar::{
 
 use crate::config::Config;
 use crate::format::pretty;
-use crate::menu::{build_menu, title_x, Action, MENUS};
-use crate::ui::{char_at, h_scrollbar, scrollbar, TAB_LEN};
+use crate::menu::{Action, MENUS, build_menu, title_x};
+use crate::ui::{TAB_LEN, char_at, h_scrollbar, scrollbar};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {
@@ -170,14 +170,11 @@ impl App {
                         );
                         if self.state.select_at(row, col) {
                             self.state.ensure_cursor_visible(self.view_height);
-                            self.state.ensure_cursor_visible_x(self.tree_rect.width as usize);
+                            self.state
+                                .ensure_cursor_visible_x(self.tree_rect.width as usize);
                             if self.state.selected_field() == Field::Value
                                 && self.state.is_collapsed()
-                                && was_on
-                                    == (
-                                        self.state.cursor_path().to_vec(),
-                                        Field::Value,
-                                    )
+                                && was_on == (self.state.cursor_path().to_vec(), Field::Value)
                             {
                                 self.state.expand_block();
                                 self.message = Some("block shown".to_string());
@@ -336,7 +333,8 @@ impl App {
             _ => return false,
         }
         self.state.ensure_cursor_visible(self.view_height);
-        self.state.ensure_cursor_visible_x(self.tree_rect.width as usize);
+        self.state
+            .ensure_cursor_visible_x(self.tree_rect.width as usize);
         false
     }
 
@@ -351,10 +349,10 @@ impl App {
                 self.commit_and_move(JsonEditorState::select_up);
             }
             (Key::Tab, false, false, false) => {
-                self.commit_and_move(JsonEditorState::select_left);
+                self.commit_and_move(JsonEditorState::select_right);
             }
             (Key::Tab, false, false, true) => {
-                self.commit_and_move(JsonEditorState::select_right);
+                self.commit_and_move(JsonEditorState::select_left);
             }
             (Key::Enter | Key::Char('\n' | '\r'), ..) => self.textarea.insert_newline(),
             _ => {
@@ -373,7 +371,8 @@ impl App {
         self.dirty = true;
         move_selection(&mut self.state);
         self.state.ensure_cursor_visible(self.view_height);
-        self.state.ensure_cursor_visible_x(self.tree_rect.width as usize);
+        self.state
+            .ensure_cursor_visible_x(self.tree_rect.width as usize);
         self.mode = Mode::Normal;
     }
 
@@ -495,7 +494,9 @@ impl App {
             Key::Up | Key::Char('k') => self.menu.up(),
             Key::Right | Key::Char('l') => {
                 self.menu.right();
-                self.menu_group = self.menu_group.map(|group| (group + 1).min(MENUS.len() - 1));
+                self.menu_group = self
+                    .menu_group
+                    .map(|group| (group + 1).min(MENUS.len() - 1));
             }
             Key::Left | Key::Char('h') => {
                 self.menu.left();
@@ -730,7 +731,11 @@ mod tests {
         for _ in 0..4 {
             app.handle_key(key('j'));
         }
-        assert_eq!(app.state.cursor_path(), [1, 0], "b, the first entry of nest");
+        assert_eq!(
+            app.state.cursor_path(),
+            [1, 0],
+            "b, the first entry of nest"
+        );
         app.handle_key(key('H'));
         app.handle_key(key('H'));
         assert_eq!(root(&app), r#"{"a":{"b":1,"k":0},"nest":{"z":2}}"#);
@@ -745,7 +750,11 @@ mod tests {
 
         app.handle_key(key('-'));
         assert!(app.state.is_collapsed());
-        assert_eq!(app.state.line_count(), before - 3, "a's entries and its close");
+        assert_eq!(
+            app.state.line_count(),
+            before - 3,
+            "a's entries and its close"
+        );
         assert_eq!(
             root(&app),
             r#"{"a":{"x":1,"y":2},"b":3}"#,
@@ -819,7 +828,11 @@ mod tests {
         app.handle_key(key('j'));
         assert_eq!(app.state.cursor_path(), [1], "b is selected");
         click_cursor(&mut app, 7);
-        println!("PROBE path={:?} collapsed={}", app.state.cursor_path(), app.state.is_collapsed());
+        println!(
+            "PROBE path={:?} collapsed={}",
+            app.state.cursor_path(),
+            app.state.is_collapsed()
+        );
 
         // Back to a: the first click only selects.
         app.handle_key(key('k'));
