@@ -37,11 +37,11 @@
 //! — `{"save": {"key": "w"}}` is a plain `w`, not `Ctrl+W`. A terminal sends
 //! `J`, `K` and `+` with Shift held, so a binding using one needs
 //! `"shift": true`. An action with no entry keeps its default. Names: `save`, `quit`, `add`,
-//! `delete`, `move-up`, `move-down`, `move-across-up`, `move-across-down`,
-//! `edit-value`, `edit-key`, `hide-block`, `show-block`, `toggle-block`,
-//! `select-up`, `select-down`, `select-left`, `select-right`, `select-line-up`,
-//! `select-line-down`, `select-word-left`, `select-word-right`,
-//! `select-first`, `select-last`, `page-up`, `page-down`, `edit-field` and
+//! `delete`, `move_up`, `move_down`, `move_across_up`, `move_across_down`,
+//! `edit_value`, `edit_key`, `hide_block`, `show_block`, `toggle_block`,
+//! `select_up`, `select_down`, `select_left`, `select_right`, `select_line_up`,
+//! `select_line_down`, `select_word_left`, `select_word_right`,
+//! `select_first`, `select_last`, `page_up`, `page_down`, `edit_field` and
 //! `menu`. A key is a single character, or one of `esc`, `enter`, `tab`,
 //! `space`, `backspace`, `delete`, `home`, `end`, `page_up`, `page_down`,
 //! `up`, `down`, `left`, `right`, `f1` through `f12`.

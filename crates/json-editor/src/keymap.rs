@@ -52,20 +52,54 @@ impl Binding {
         self.key == input.key && self.ctrl == input.ctrl && self.alt == input.alt
     }
 
-    /// The binding a config entry names, if it names a real action.
+    /// The binding a config entry names.
     ///
     /// Every modifier is taken exactly as written and is false when the
     /// config leaves it out, so a rebind never inherits anything from the
     /// default: `{"save": {"key": "w"}}` is a plain `w`, not `Ctrl+W`.
-    pub(crate) fn from_json(name: &str, key: Key, ctrl: bool, alt: bool, shift: bool) -> Option<Self> {
-        Action::from_name(name)?;
-        Some(Self {
+    pub(crate) fn from_json(key: Key, ctrl: bool, alt: bool, shift: bool) -> Self {
+        Self {
             key,
             ctrl,
             alt,
             shift,
-        })
+        }
     }
+}
+
+/// The names a key may be written as: a single character, a name like `f2` or
+/// `tab`, or one of the arrow and editing keys. `None` for anything else.
+pub(crate) fn key_from_name(name: &str) -> Option<Key> {
+    let mut chars = name.chars();
+    let one = chars.next()?;
+    if chars.next().is_none() {
+        return Some(Key::Char(one));
+    }
+    Some(match name {
+        "esc" | "escape" => Key::Esc,
+        "enter" | "return" => Key::Enter,
+        "tab" => Key::Tab,
+        "backspace" => Key::Backspace,
+        "delete" | "del" => Key::Delete,
+        "home" => Key::Home,
+        "end" => Key::End,
+        "pageup" | "page_up" => Key::PageUp,
+        "pagedown" | "page_down" => Key::PageDown,
+        "up" => Key::Up,
+        "down" => Key::Down,
+        "left" => Key::Left,
+        "right" => Key::Right,
+        "space" => Key::Char(' '),
+        _ => {
+            // `f1` through `f12`, and nothing else.
+            let number = name
+                .strip_prefix('f')
+                .filter(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+                .and_then(|rest| rest.parse::<u8>().ok())
+                .filter(|number| (1..=12).contains(number));
+            Key::F(number?)
+        }
+    })
 }
 
 /// The key each action runs on. The order is the order they appear in the
@@ -125,14 +159,14 @@ mod tests {
 
     #[test]
     fn modifiers_default_to_false() {
-        let binding = Binding::from_json("add", Key::Char('a'), false, false, false).unwrap();
+        let binding = Binding::from_json(Key::Char('a'), false, false, false);
         assert_eq!(binding, Binding::plain(Key::Char('a')));
         assert!(!binding.ctrl && !binding.alt && !binding.shift);
     }
 
     #[test]
     fn a_binding_matches_its_key_and_modifiers() {
-        let binding = Binding::from_json("save", Key::Char('s'), true, false, false).unwrap();
+        let binding = Binding::from_json(Key::Char('s'), true, false, false);
         assert!(binding.matches(&Input {
             key: Key::Char('s'),
             ctrl: true,
@@ -151,7 +185,7 @@ mod tests {
     fn a_rebind_does_not_inherit_a_default_modifier() {
         // Save is Ctrl+S by default, but naming another key with no modifier
         // gives a plain one.
-        let binding = Binding::from_json("save", Key::Char('w'), false, false, false).unwrap();
+        let binding = Binding::from_json(Key::Char('w'), false, false, false);
         assert_eq!(binding, Binding::plain(Key::Char('w')));
     }
 
@@ -161,7 +195,7 @@ mod tests {
         // so or the key never matches.
         for action in [Action::MoveUp, Action::MoveDown, Action::ShowBlock] {
             let binding = default_binding(action);
-            assert!(binding.shift, "{} is a shifted key", action.name());
+            assert!(binding.shift, "{action:?} is a shifted key");
             assert!(binding.matches(&Input {
                 key: binding.key,
                 ctrl: false,
@@ -172,7 +206,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_action_names_are_rejected() {
-        assert!(Binding::from_json("nope", Key::Char('x'), false, false, false).is_none());
+    fn unknown_key_names_are_rejected() {
+        assert!(key_from_name("nonsense").is_none());
+        assert!(key_from_name("f13").is_none());
+        assert!(key_from_name("f0").is_none());
+        assert_eq!(key_from_name("f1"), Some(Key::F(1)));
+        assert_eq!(key_from_name("page_down"), Some(Key::PageDown));
     }
 }

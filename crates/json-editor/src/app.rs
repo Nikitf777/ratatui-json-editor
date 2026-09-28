@@ -978,12 +978,11 @@ mod tests {
     fn a_rebound_key_moves_to_its_new_action() {
         // Delete is on `d` by default; move it to `x` and the old key starts
         // editing instead, the way any unbound letter would.
-        let binds = vec![(
-            Action::Delete,
-            Binding::from_json("delete", Key::Char('x'), false, false, false).unwrap(),
-        )];
         let config = Config {
-            binds,
+            binds: crate::config::Binds(vec![(
+                Action::Delete,
+                Binding::from_json(Key::Char('x'), false, false, false),
+            )]),
             ..Config::default()
         };
         let mut app = editor_with(r#"{"a": 1, "b": 2}"#, config);
