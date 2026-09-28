@@ -643,6 +643,7 @@ impl JsonEditorState {
             return;
         }
         self.collapsed.push(self.cursor.clone());
+        self.clamp_scroll();
     }
 
     /// Shows a hidden block again, as [`JsonEditorState::collapse_block`]
@@ -651,6 +652,23 @@ impl JsonEditorState {
     /// time.
     pub fn expand_block(&mut self) {
         self.collapsed.retain(|path| *path != self.cursor);
+        self.clamp_scroll();
+    }
+
+    /// Keeps the view inside the tree after it has grown or shrunk, so the
+    /// cursor never ends up off the top of it.
+    fn clamp_scroll(&mut self) {
+        self.scroll = self.scroll.min(self.line_count().saturating_sub(1));
+    }
+
+    /// The line the node at `path` renders on, counted as
+    /// [`Self::line_count`] counts them, or `None` when there is no such line.
+    /// [`Self::select_at`] is its inverse: it turns a line into a selection.
+    pub fn row_of(&self, path: &[usize]) -> Option<usize> {
+        flatten(&self.root, &self.collapsed)
+            .iter()
+            .filter(|row| !matches!(row.content, RowContent::Close { .. }))
+            .position(|row| row.path == path)
     }
 
     /// Whether the selected container's block is hidden.

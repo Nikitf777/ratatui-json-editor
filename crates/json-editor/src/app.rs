@@ -92,10 +92,6 @@ impl App {
         if self.menu_group.is_some() {
             return self.menu_key(input);
         }
-        if input.key == Key::F(10) {
-            self.open_menu(0);
-            return false;
-        }
         match self.mode {
             Mode::Normal => self.normal_key(input),
             Mode::Edit => {
@@ -248,94 +244,158 @@ impl App {
         }
     }
 
+    /// Normal mode: the keymap decides what runs. An action bound to a key
+    /// that no longer exists is simply never taken, so unbinding is done by
+    /// pointing the action somewhere harmless.
     fn normal_key(&mut self, input: Input) -> bool {
         self.message = None;
-        match (input.key, input.ctrl, input.alt, input.shift) {
-            (Key::Char('q') | Key::Esc, false, false, _) | (Key::Char('c'), true, _, _) => {
-                return self.request_exit();
-            }
-            (Key::Char('s'), true, _, _) => {
-                self.save();
-                return false;
-            }
-            (Key::Char('j') | Key::Down, false, false, _) => {
-                self.state.select_down();
-            }
-            (Key::Char('k') | Key::Up, false, false, _) => {
-                self.state.select_up();
-            }
-            (Key::Char('h') | Key::Left, false, false, _) => {
-                self.state.select_left();
-            }
-            (Key::Char('l') | Key::Right, false, false, _) => {
-                self.state.select_right();
-            }
-            (Key::Tab, false, false, false) => {
-                self.state.select_right();
-            }
-            (Key::Tab, false, false, true) => {
-                self.state.select_left();
-            }
-            (Key::Enter, false, false, false) => {
-                self.state.select_down();
-            }
-            (Key::Enter, false, false, true) => {
-                self.state.select_up();
-            }
-            (Key::F(2), false, false, _) => {
-                self.begin_edit();
-            }
-            (Key::Char('e'), false, false, _) => {
-                self.do_edit_value();
-            }
-            (Key::Char('r'), false, false, _) => {
-                self.do_edit_key();
-            }
-            (Key::Char('a'), false, false, _) => {
-                self.do_add();
-            }
-            (Key::Char('d') | Key::Char('x') | Key::Delete, false, false, _) => {
-                self.do_delete();
-            }
-            (Key::Char('J'), false, false, _) => {
-                self.do_move_down();
-            }
-            (Key::Char('K'), false, false, _) => {
-                self.do_move_up();
-            }
-            (Key::Char('-'), false, false, _) => {
-                self.do_hide_block();
-            }
-            (Key::Char('+'), false, false, _) => {
-                self.do_show_block();
-            }
-            (Key::Char('*'), false, false, _) => {
-                self.do_toggle_block();
-            }
-            (Key::Char('H'), false, false, _) => {
-                self.do_move_across_up();
-            }
-            (Key::Char('L'), false, false, _) => {
-                self.do_move_across_down();
-            }
-            (Key::PageDown, false, false, _) => {
-                let top = self.state.scroll() + self.view_height / 2;
-                self.state.set_scroll(top);
-            }
-            (Key::PageUp, false, false, _) => {
-                let top = self.state.scroll().saturating_sub(self.view_height / 2);
-                self.state.set_scroll(top);
-            }
-            (Key::Char(_), false, false, _) => {
+        let Some(action) = self.action_for(&input) else {
+            // Anything else starts editing, the way typing over a cell does.
+            if let Key::Char(_) = input.key
+                && !input.ctrl
+                && !input.alt
+                && !input.shift
+            {
                 self.begin_edit_fresh();
                 self.textarea.input(input);
             }
-            _ => return false,
+            return false;
+        };
+        match action {
+            Action::Quit | Action::Menu => {}
+            _ => {
+                self.state.ensure_cursor_visible(self.view_height);
+                self.state
+                    .ensure_cursor_visible_x(self.tree_rect.width as usize);
+            }
         }
-        self.state.ensure_cursor_visible(self.view_height);
-        self.state
-            .ensure_cursor_visible_x(self.tree_rect.width as usize);
+        if self.run(action) {
+            return true;
+        }
         false
+    }
+
+    /// The action an input event runs, if any.
+    fn action_for(&self, input: &Input) -> Option<Action> {
+        // `shift` is a property of the key rather than a modifier, so it is
+        // matched separately: Tab is not Shift+Tab.
+        Action::all().into_iter().find(|action| {
+            let binding = self.config.binding(*action);
+            binding.shift == input.shift && binding.matches(input)
+        })
+    }
+
+    /// Runs an action, returning `true` when the app should quit.
+    fn run(&mut self, action: Action) -> bool {
+        match action {
+            Action::Quit => self.request_exit(),
+            Action::Menu => {
+                self.open_menu(0);
+                false
+            }
+            Action::Save => {
+                self.save();
+                false
+            }
+            Action::Add => {
+                self.do_add();
+                false
+            }
+            Action::Delete => {
+                self.do_delete();
+                false
+            }
+            Action::MoveUp => {
+                self.do_move_up();
+                false
+            }
+            Action::MoveDown => {
+                self.do_move_down();
+                false
+            }
+            Action::MoveAcrossUp => {
+                self.do_move_across_up();
+                false
+            }
+            Action::MoveAcrossDown => {
+                self.do_move_across_down();
+                false
+            }
+            Action::EditValue => {
+                self.do_edit_value();
+                false
+            }
+            Action::EditKey => {
+                self.do_edit_key();
+                false
+            }
+            Action::HideBlock => {
+                self.do_hide_block();
+                false
+            }
+            Action::ShowBlock => {
+                self.do_show_block();
+                false
+            }
+            Action::ToggleBlock => {
+                self.do_toggle_block();
+                false
+            }
+            Action::SelectUp => {
+                self.state.select_up();
+                false
+            }
+            Action::SelectDown => {
+                self.state.select_down();
+                false
+            }
+            Action::SelectLeft => {
+                self.state.select_left();
+                false
+            }
+            Action::SelectRight => {
+                self.state.select_right();
+                false
+            }
+            Action::SelectLineUp => {
+                self.state.select_up();
+                false
+            }
+            Action::SelectLineDown => {
+                self.state.select_down();
+                false
+            }
+            Action::SelectWordLeft => {
+                self.state.select_left();
+                false
+            }
+            Action::SelectWordRight => {
+                self.state.select_right();
+                false
+            }
+            Action::SelectFirst => {
+                self.state.cursor_to_first_child();
+                false
+            }
+            Action::SelectLast => {
+                self.state.select_left();
+                false
+            }
+            Action::PageUp => {
+                let top = self.state.scroll().saturating_sub(self.view_height / 2);
+                self.state.set_scroll(top);
+                false
+            }
+            Action::PageDown => {
+                let top = self.state.scroll() + self.view_height / 2;
+                self.state.set_scroll(top);
+                false
+            }
+            Action::EditField => {
+                self.begin_edit();
+                false
+            }
+        }
     }
 
     fn edit_input(&mut self, input: Input) {
@@ -547,21 +607,7 @@ impl App {
         self.menu_group = None;
         let mut quit = false;
         for action in actions {
-            match action {
-                Action::Save => self.save(),
-                Action::Quit => quit = self.request_exit(),
-                Action::Add => self.do_add(),
-                Action::Delete => self.do_delete(),
-                Action::MoveUp => self.do_move_up(),
-                Action::MoveDown => self.do_move_down(),
-                Action::MoveAcrossUp => self.do_move_across_up(),
-                Action::MoveAcrossDown => self.do_move_across_down(),
-                Action::EditValue => self.do_edit_value(),
-                Action::EditKey => self.do_edit_key(),
-                Action::HideBlock => self.do_hide_block(),
-                Action::ShowBlock => self.do_show_block(),
-                Action::ToggleBlock => self.do_toggle_block(),
-            }
+            quit |= self.run(action);
         }
         quit
     }
@@ -680,14 +726,20 @@ fn scroll_event(mouse: MouseEvent) -> Option<ScrollEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap::Binding;
     use ratatui::crossterm::event::KeyModifiers;
 
     fn editor(src: &str) -> App {
+        editor_with(src, Config::default())
+    }
+
+    fn editor_with(src: &str, config: Config) -> App {
         let state = JsonEditorState::parse(src).unwrap();
-        let mut app = App::new(state, None, Config::default(), false);
-        // Nothing has been drawn, so give the tree a size to work against;
-        // without it the view scrolls on every cursor move.
+        let mut app = App::new(state, None, config, false);
+        // Nothing has been drawn, so give the tree a size and a viewport to
+        // work against; without them the view scrolls on every cursor move.
         app.tree_rect = Rect::new(0, 0, 60, 20);
+        app.view_height = 20;
         app
     }
 
@@ -697,6 +749,17 @@ mod tests {
             ctrl: false,
             alt: false,
             shift: false,
+        }
+    }
+
+    /// What a terminal sends for a capital letter: the character is already
+    /// upper case, and Shift is reported as held.
+    fn shift_key(c: char) -> Input {
+        Input {
+            key: Key::Char(c),
+            ctrl: false,
+            alt: false,
+            shift: true,
         }
     }
 
@@ -710,9 +773,9 @@ mod tests {
     fn move_keys_reorder_among_siblings() {
         let mut app = editor(r#"{"a":1,"b":2,"c":3}"#);
         app.handle_key(key('j'));
-        app.handle_key(key('J'));
+        app.handle_key(shift_key('J'));
         assert_eq!(root(&app), r#"{"b":2,"a":1,"c":3}"#);
-        app.handle_key(key('K'));
+        app.handle_key(shift_key('K'));
         assert_eq!(root(&app), r#"{"a":1,"b":2,"c":3}"#);
     }
 
@@ -722,7 +785,7 @@ mod tests {
         // only past a sibling.
         let mut app = editor(r#"{"a": 1, "b": {"k": 0}, "c": 3}"#);
         app.handle_key(key('j'));
-        app.handle_key(key('L'));
+        app.handle_key(shift_key('L'));
         assert_eq!(root(&app), r#"{"b":{"a":1,"k":0},"c":3}"#);
 
         // Up into the object above: b is the first entry of nest, and the
@@ -736,8 +799,8 @@ mod tests {
             [1, 0],
             "b, the first entry of nest"
         );
-        app.handle_key(key('H'));
-        app.handle_key(key('H'));
+        app.handle_key(shift_key('H'));
+        app.handle_key(shift_key('H'));
         assert_eq!(root(&app), r#"{"a":{"b":1,"k":0},"nest":{"z":2}}"#);
     }
 
@@ -766,21 +829,45 @@ mod tests {
         assert!(app.state.is_collapsed(), "a second hide does not show it");
         assert_eq!(app.state.line_count(), before - 3);
 
-        app.handle_key(key('+'));
+        app.handle_key(shift_key('+'));
         assert!(!app.state.is_collapsed());
         assert_eq!(app.state.line_count(), before);
         assert_eq!(root(&app), r#"{"a":{"x":1,"y":2},"b":3}"#);
 
         // Showing an open block is a no-op too.
-        app.handle_key(key('+'));
+        app.handle_key(shift_key('+'));
         assert_eq!(app.state.line_count(), before);
     }
 
-    /// A click on the cursor's own line, at display `column`. Hiding a block
-    /// can scroll the view, so the row is worked out from the cursor rather
-    /// than assumed.
+    /// A click on the line the node at `path` renders on, at display
+    /// `column`. The row comes from the state, so the test does not depend on
+    /// how far the view has scrolled.
+    fn click_path(app: &mut App, path: &[usize], column: u16) {
+        let row = app.state.row_of(path).expect("the node has a line") as u16;
+        let row = row.saturating_sub(app.state.scroll() as u16);
+        click(app, row, column);
+    }
+
+    /// Moves the cursor to `path` with the select keys, so the tests do not
+    /// depend on how many keys away a node is.
+    fn focus(app: &mut App, path: &[usize]) {
+        for _ in 0..8 {
+            if app.state.cursor_path() == path {
+                return;
+            }
+            app.handle_key(key('j'));
+        }
+        for _ in 0..8 {
+            if app.state.cursor_path() == path {
+                return;
+            }
+            app.handle_key(key('k'));
+        }
+        panic!("could not reach {path:?}, ended at {:?}", app.state.cursor_path());
+    }
+
     fn click_cursor(app: &mut App, column: u16) {
-        let row = (app.state.cursor_line() - app.state.scroll()) as u16;
+        let row = app.state.cursor_line().saturating_sub(app.state.scroll()) as u16;
         click(app, row, column);
     }
 
@@ -820,32 +907,12 @@ mod tests {
     fn a_hidden_block_needs_a_second_click_to_open() {
         let mut app = editor(r#"{"a": {"x": 1, "y": 2}, "b": 3}"#);
         let before = app.state.line_count();
-        app.handle_key(key('j'));
+        focus(&mut app, &[0]);
         app.handle_key(key('-'));
-        assert!(app.state.is_collapsed());
+        assert_eq!(app.state.collapsed_paths(), [vec![0usize]], "a is hidden");
 
-        // A click somewhere else selects, and does not open anything.
-        app.handle_key(key('j'));
-        assert_eq!(app.state.cursor_path(), [1], "b is selected");
-        click_cursor(&mut app, 7);
-        println!(
-            "PROBE path={:?} collapsed={}",
-            app.state.cursor_path(),
-            app.state.is_collapsed()
-        );
-
-        // Back to a: the first click only selects.
-        app.handle_key(key('k'));
-        assert_eq!(app.state.cursor_path(), [0]);
-        app.handle_key(key('-'));
-        app.handle_key(key('+'));
-        assert!(!app.state.is_collapsed());
-        app.handle_key(key('-'));
-        assert!(app.state.is_collapsed());
-
-        // Clicking a while the cursor is elsewhere moves the selection only.
-        app.handle_key(key('j'));
-        assert_eq!(app.state.cursor_path(), [1], "b");
+        // A click somewhere else moves the selection and opens nothing.
+        focus(&mut app, &[1]);
         click_cursor(&mut app, 7);
         assert_eq!(app.state.cursor_path(), [1], "b stays selected");
         assert_eq!(
@@ -854,11 +921,16 @@ mod tests {
             "a is still hidden: a click on b does not open it"
         );
 
-        // A click back on a only selects; it is already selected here, so the
-        // first one back opens it.
-        app.handle_key(key('k'));
-        assert_eq!(app.state.cursor_path(), [0]);
-        click_cursor(&mut app, 7);
+        click_path(&mut app, &[0], 7);
+        assert_eq!(app.state.cursor_path(), [0], "a is selected");
+        assert_eq!(
+            app.state.collapsed_paths(),
+            [vec![0usize]],
+            "the click that moved the selection did not open it"
+        );
+
+        // The second click, now that a is the selection, opens it.
+        click_path(&mut app, &[0], 7);
         assert!(
             app.state.collapsed_paths().is_empty(),
             "the click on the selected block opens it"
@@ -873,7 +945,7 @@ mod tests {
         app.handle_key(key('-'));
         assert!(app.state.is_collapsed());
         // With a's block hidden the view scrolls to keep a on screen.
-        let screen = (app.state.cursor_line() - app.state.scroll()) as u16;
+        let screen = app.state.cursor_line().saturating_sub(app.state.scroll()) as u16;
 
         click(&mut app, screen, 2);
         assert_eq!(app.state.cursor_path(), [0], "a is selected again");
@@ -888,11 +960,11 @@ mod tests {
         app.handle_key(key('j'));
         assert_eq!(app.state.cursor_path(), [0], "a");
 
-        app.handle_key(key('*'));
+        app.handle_key(shift_key('*'));
         assert!(app.state.is_collapsed());
         assert_eq!(app.state.line_count(), before - 3);
 
-        app.handle_key(key('*'));
+        app.handle_key(shift_key('*'));
         assert!(!app.state.is_collapsed());
         assert_eq!(app.state.line_count(), before);
         assert_eq!(
@@ -903,13 +975,36 @@ mod tests {
     }
 
     #[test]
+    fn a_rebound_key_moves_to_its_new_action() {
+        // Delete is on `d` by default; move it to `x` and the old key starts
+        // editing instead, the way any unbound letter would.
+        let binds = vec![(
+            Action::Delete,
+            Binding::from_json("delete", Key::Char('x'), false, false, false).unwrap(),
+        )];
+        let config = Config {
+            binds,
+            ..Config::default()
+        };
+        let mut app = editor_with(r#"{"a": 1, "b": 2}"#, config);
+        app.handle_key(key('j'));
+        app.handle_key(key('x'));
+        assert_eq!(root(&app), r#"{"b":2}"#, "x deletes the selected entry");
+
+        // `d` is unbound, so it starts editing, leaving the document alone.
+        app.handle_key(key('d'));
+        assert!(app.mode == Mode::Edit, "d starts editing now");
+        assert_eq!(root(&app), r#"{"b":2}"#, "the document is untouched");
+    }
+
+    #[test]
     fn a_refused_move_leaves_the_document_alone() {
         let mut app = editor(r#"{"a":1,"b":2}"#);
         for _ in 0..2 {
             app.handle_key(key('j'));
         }
         assert_eq!(app.state.cursor_path(), [1], "b, the document's last line");
-        app.handle_key(key('L'));
+        app.handle_key(shift_key('L'));
         assert_eq!(root(&app), r#"{"a":1,"b":2}"#, "there is nowhere to go");
         assert!(app.message.is_some(), "the reason is shown");
     }

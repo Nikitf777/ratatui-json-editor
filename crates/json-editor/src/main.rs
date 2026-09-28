@@ -21,12 +21,30 @@
 //! with `--config`:
 //!
 //! ```json
-//! { "autosave": true }
+//! {
+//!   "autosave": true,
+//!   "binds": { "delete": { "key": "x", "ctrl": true } }
+//! }
 //! ```
 //!
 //! `autosave` (default `false`) saves the file automatically on exit. With it
 //! off, quitting with unsaved changes shows a popup first (`q` quits without
 //! saving, `Ctrl+S` saves and quits, `Esc` cancels).
+//!
+//! `binds` moves actions to other keys. Each entry names an action and the key
+//! to run it on; `ctrl`, `alt` and `shift` are false unless the entry says
+//! otherwise, so a rebound action never inherits the modifiers of its default
+//! — `{"save": {"key": "w"}}` is a plain `w`, not `Ctrl+W`. A terminal sends
+//! `J`, `K` and `+` with Shift held, so a binding using one needs
+//! `"shift": true`. An action with no entry keeps its default. Names: `save`, `quit`, `add`,
+//! `delete`, `move-up`, `move-down`, `move-across-up`, `move-across-down`,
+//! `edit-value`, `edit-key`, `hide-block`, `show-block`, `toggle-block`,
+//! `select-up`, `select-down`, `select-left`, `select-right`, `select-line-up`,
+//! `select-line-down`, `select-word-left`, `select-word-right`,
+//! `select-first`, `select-last`, `page-up`, `page-down`, `edit-field` and
+//! `menu`. A key is a single character, or one of `esc`, `enter`, `tab`,
+//! `space`, `backspace`, `delete`, `home`, `end`, `page_up`, `page_down`,
+//! `up`, `down`, `left`, `right`, `f1` through `f12`.
 //!
 //! A menu bar sits on top (`F10` opens it: File, Edit and View), then two
 //! panels:
@@ -59,6 +77,7 @@
 mod app;
 mod config;
 mod format;
+mod keymap;
 mod menu;
 mod ui;
 
