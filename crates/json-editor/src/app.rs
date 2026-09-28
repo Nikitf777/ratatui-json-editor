@@ -105,28 +105,35 @@ impl App {
     /// clicks select in the tree (key vs value by position) and in the input
     /// line (which places the text cursor); the wheel scrolls.
     pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) {
+        // The scrollbars only see events that land on them. Offering a click
+        // anywhere to the scrollbar would make a click on the track scroll,
+        // which is not what a click in the tree should ever do.
         if let Some(event) = scroll_event(mouse) {
-            let vbar = scrollbar(
-                self.state.line_count(),
-                self.tree_rect.height as usize,
-                self.state.scroll(),
-            );
-            if let Some(ScrollCommand::SetOffset(offset)) =
-                vbar.handle_event(self.scrollbar_rect, event, &mut self.scrollbar_interaction)
-            {
-                self.state.set_scroll(offset);
-                return;
+            if inside(self.scrollbar_rect, mouse) {
+                let vbar = scrollbar(
+                    self.state.line_count(),
+                    self.tree_rect.height as usize,
+                    self.state.scroll(),
+                );
+                if let Some(ScrollCommand::SetOffset(offset)) =
+                    vbar.handle_event(self.scrollbar_rect, event, &mut self.scrollbar_interaction)
+                {
+                    self.state.set_scroll(offset);
+                    return;
+                }
             }
-            let hbar = h_scrollbar(
-                self.state.content_width(),
-                self.tree_rect.width as usize,
-                self.state.scroll_x(),
-            );
-            if let Some(ScrollCommand::SetOffset(offset)) =
-                hbar.handle_event(self.hbar_rect, event, &mut self.hbar_interaction)
-            {
-                self.state.set_scroll_x(offset);
-                return;
+            if inside(self.hbar_rect, mouse) {
+                let hbar = h_scrollbar(
+                    self.state.content_width(),
+                    self.tree_rect.width as usize,
+                    self.state.scroll_x(),
+                );
+                if let Some(ScrollCommand::SetOffset(offset)) =
+                    hbar.handle_event(self.hbar_rect, event, &mut self.hbar_interaction)
+                {
+                    self.state.set_scroll_x(offset);
+                    return;
+                }
             }
         }
 
@@ -798,6 +805,76 @@ mod tests {
         assert_eq!(root(&app), r#"{"b":2,"a":1,"c":3}"#);
         app.handle_key(shift_key('K'));
         assert_eq!(root(&app), r#"{"a":1,"b":2,"c":3}"#);
+    }
+
+    /// A long document, so there is room to scroll in either direction.
+    fn long_editor() -> App {
+        let mut src = String::from("{");
+        for n in 0..40 {
+            if n > 0 {
+                src.push(',');
+            }
+            src.push_str(&format!("\"k{n}\": {n}"));
+        }
+        src.push('}');
+        let mut app = editor(&src);
+        app.tree_rect = Rect::new(0, 0, 60, 10);
+        app.scrollbar_rect = Rect::new(60, 0, 1, 10);
+        app.hbar_rect = Rect::new(0, 10, 60, 1);
+        app
+    }
+
+    /// A click at absolute coordinates, for the panels themselves.
+    fn click_absolute(app: &mut App, column: u16, row: u16) {
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    #[test]
+    fn the_scrollbars_still_scroll_when_clicked() {
+        let mut app = long_editor();
+        assert_eq!(app.state.scroll(), 0);
+
+        // The vertical bar's track: clicking below the thumb pages down.
+        click_absolute(&mut app, 60, 9);
+        assert!(app.state.scroll() > 0, "the track still scrolls");
+
+        // Its arrow at the very top goes back.
+        let mut app = long_editor();
+        click_absolute(&mut app, 60, 9);
+        let moved = app.state.scroll();
+        assert!(moved > 0);
+        click_absolute(&mut app, 60, 0);
+        assert!(
+            app.state.scroll() < moved,
+            "the arrow at the top scrolls back up"
+        );
+    }
+
+    #[test]
+    fn a_click_never_scrolls_the_tree() {
+        let mut app = long_editor();
+        for row in 0..10 {
+            let before = app.state.scroll();
+            let selected = app.state.cursor_line();
+            // Columns across the panel, well away from either scrollbar.
+            for column in [0, 5, 20] {
+                click_absolute(&mut app, column, row);
+                assert_eq!(
+                    app.state.scroll(),
+                    before,
+                    "a click at row {row} must not scroll"
+                );
+                assert!(
+                    app.state.cursor_line() != selected || row == 0,
+                    "a click at row {row} should select something"
+                );
+            }
+        }
     }
 
     #[test]
