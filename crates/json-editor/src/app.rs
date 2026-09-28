@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui_json_editor::{EditError, JsonEditorState, Theme};
+use ratatui_json_editor::{EditError, Field, JsonEditorState, Theme};
 use ratatui_textarea::{CursorMove, Input, Key, TextArea};
 use tui_menu::{MenuEvent, MenuState};
 use tui_scrollbar::{
@@ -160,9 +160,28 @@ impl App {
                         let row = self.state.scroll() + (mouse.row - self.tree_rect.y) as usize;
                         let col =
                             (mouse.column - self.tree_rect.x) as usize + self.state.scroll_x();
+                        // What was under the cursor before this click. A
+                        // hidden block opens on a second click, like clicking
+                        // a folder twice, so a click that moves the selection
+                        // away only selects.
+                        let was_on = (
+                            self.state.cursor_path().to_vec(),
+                            self.state.selected_field(),
+                        );
                         if self.state.select_at(row, col) {
                             self.state.ensure_cursor_visible(self.view_height);
                             self.state.ensure_cursor_visible_x(self.tree_rect.width as usize);
+                            if self.state.selected_field() == Field::Value
+                                && self.state.is_collapsed()
+                                && was_on
+                                    == (
+                                        self.state.cursor_path().to_vec(),
+                                        Field::Value,
+                                    )
+                            {
+                                self.state.expand_block();
+                                self.message = Some("block shown".to_string());
+                            }
                         }
                     } else if inside(self.input_rect, mouse) {
                         self.place_text_cursor(mouse);
@@ -660,10 +679,15 @@ fn scroll_event(mouse: MouseEvent) -> Option<ScrollEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
 
     fn editor(src: &str) -> App {
         let state = JsonEditorState::parse(src).unwrap();
-        App::new(state, None, Config::default(), false)
+        let mut app = App::new(state, None, Config::default(), false);
+        // Nothing has been drawn, so give the tree a size to work against;
+        // without it the view scrolls on every cursor move.
+        app.tree_rect = Rect::new(0, 0, 60, 20);
+        app
     }
 
     fn key(c: char) -> Input {
@@ -741,6 +765,107 @@ mod tests {
         // Showing an open block is a no-op too.
         app.handle_key(key('+'));
         assert_eq!(app.state.line_count(), before);
+    }
+
+    /// A click on the cursor's own line, at display `column`. Hiding a block
+    /// can scroll the view, so the row is worked out from the cursor rather
+    /// than assumed.
+    fn click_cursor(app: &mut App, column: u16) {
+        let row = (app.state.cursor_line() - app.state.scroll()) as u16;
+        click(app, row, column);
+    }
+
+    /// A click inside the tree, in display coordinates of its panel. The panel
+    /// is set by hand because nothing has been drawn yet.
+    fn click(app: &mut App, row: u16, column: u16) {
+        app.tree_rect = Rect::new(0, 0, 60, 20);
+        let tree = app.tree_rect;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: tree.x + column,
+            row: tree.y + row,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    #[test]
+    fn clicking_a_hidden_block_opens_it() {
+        let mut app = editor(r#"{"a": {"x": 1, "y": 2}, "b": 3}"#);
+        let before = app.state.line_count();
+        // Row 1 is a's line; column 7 is its value, the block itself.
+        click(&mut app, 1, 7);
+        assert_eq!(app.state.cursor_path(), [0], "a is selected");
+        assert_eq!(app.state.selected_field(), Field::Value);
+        app.handle_key(key('-'));
+        assert!(app.state.is_collapsed());
+        assert_eq!(app.state.line_count(), 4, "a stands for its own block");
+
+        // Hiding scrolled the view, so click where a is on screen now.
+        click_cursor(&mut app, 7);
+        assert!(!app.state.is_collapsed(), "the click opened the block");
+        assert_eq!(app.state.line_count(), before);
+        assert_eq!(root(&app), r#"{"a":{"x":1,"y":2},"b":3}"#);
+    }
+
+    #[test]
+    fn a_hidden_block_needs_a_second_click_to_open() {
+        let mut app = editor(r#"{"a": {"x": 1, "y": 2}, "b": 3}"#);
+        let before = app.state.line_count();
+        app.handle_key(key('j'));
+        app.handle_key(key('-'));
+        assert!(app.state.is_collapsed());
+
+        // A click somewhere else selects, and does not open anything.
+        app.handle_key(key('j'));
+        assert_eq!(app.state.cursor_path(), [1], "b is selected");
+        click_cursor(&mut app, 7);
+        println!("PROBE path={:?} collapsed={}", app.state.cursor_path(), app.state.is_collapsed());
+
+        // Back to a: the first click only selects.
+        app.handle_key(key('k'));
+        assert_eq!(app.state.cursor_path(), [0]);
+        app.handle_key(key('-'));
+        app.handle_key(key('+'));
+        assert!(!app.state.is_collapsed());
+        app.handle_key(key('-'));
+        assert!(app.state.is_collapsed());
+
+        // Clicking a while the cursor is elsewhere moves the selection only.
+        app.handle_key(key('j'));
+        assert_eq!(app.state.cursor_path(), [1], "b");
+        click_cursor(&mut app, 7);
+        assert_eq!(app.state.cursor_path(), [1], "b stays selected");
+        assert_eq!(
+            app.state.collapsed_paths(),
+            [vec![0usize]],
+            "a is still hidden: a click on b does not open it"
+        );
+
+        // A click back on a only selects; it is already selected here, so the
+        // first one back opens it.
+        app.handle_key(key('k'));
+        assert_eq!(app.state.cursor_path(), [0]);
+        click_cursor(&mut app, 7);
+        assert!(
+            app.state.collapsed_paths().is_empty(),
+            "the click on the selected block opens it"
+        );
+        assert_eq!(app.state.line_count(), before);
+    }
+
+    #[test]
+    fn clicking_the_key_of_a_hidden_block_leaves_it_hidden() {
+        let mut app = editor(r#"{"a": {"x": 1}, "b": 3}"#);
+        app.handle_key(key('j'));
+        app.handle_key(key('-'));
+        assert!(app.state.is_collapsed());
+        // With a's block hidden the view scrolls to keep a on screen.
+        let screen = (app.state.cursor_line() - app.state.scroll()) as u16;
+
+        click(&mut app, screen, 2);
+        assert_eq!(app.state.cursor_path(), [0], "a is selected again");
+        assert_eq!(app.state.selected_field(), Field::Key);
+        assert!(app.state.is_collapsed(), "the key is not the block");
     }
 
     #[test]

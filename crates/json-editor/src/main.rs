@@ -52,9 +52,9 @@
 //! to cancel. Invalid text is never committed.
 //!
 //! Mouse: click the menu bar to open its buttons, click in the tree to select
-//! the key or value under the pointer, click the input line to place the text
-//! cursor, wheel to scroll, and the scrollbars handle clicks, arrows and thumb
-//! drags.
+//! the key or value under the pointer — a hidden block opens on a second
+//! click, once it is selected — click the input line to place the text cursor, wheel to scroll, and
+//! the scrollbars handle clicks, arrows and thumb drags.
 
 mod app;
 mod config;
