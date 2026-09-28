@@ -275,13 +275,15 @@ impl App {
         false
     }
 
-    /// The action an input event runs, if any.
+    /// The action an input event runs, if any. An action can be bound to
+    /// several keys, so all of them are tried.
     fn action_for(&self, input: &Input) -> Option<Action> {
-        // `shift` is a property of the key rather than a modifier, so it is
-        // matched separately: Tab is not Shift+Tab.
         Action::all().into_iter().find(|action| {
-            let binding = self.config.binding(*action);
-            binding.shift == input.shift && binding.matches(input)
+            self.config.bindings(*action).into_iter().any(|binding| {
+                // `shift` is a property of the key rather than a modifier, so
+                // it is matched separately: Tab is not Shift+Tab.
+                binding.shift == input.shift && binding.matches(input)
+            })
         })
     }
 
@@ -981,7 +983,7 @@ mod tests {
         let config = Config {
             binds: crate::config::Binds(vec![(
                 Action::Delete,
-                Binding::from_json(Key::Char('x'), false, false, false),
+                vec![Binding::from_json(Key::Char('x'), false, false, false)],
             )]),
             ..Config::default()
         };
@@ -994,6 +996,30 @@ mod tests {
         app.handle_key(key('d'));
         assert!(app.mode == Mode::Edit, "d starts editing now");
         assert_eq!(root(&app), r#"{"b":2}"#, "the document is untouched");
+    }
+
+    #[test]
+    fn every_bind_of_an_action_runs_it() {
+        for remove in ['x', 'z'] {
+            let mut app = editor_with(r#"{"a": 1, "b": 2}"#, config_of());
+            app.handle_key(key('j'));
+            app.handle_key(key(remove));
+            assert_eq!(root(&app), r#"{"b":2}"#, "{remove} deletes too");
+        }
+    }
+
+    /// A second copy of a config, since the first is moved into the loop.
+    fn config_of() -> Config {
+        Config {
+            binds: crate::config::Binds(vec![(
+                Action::Delete,
+                vec![
+                    Binding::from_json(Key::Char('x'), false, false, false),
+                    Binding::from_json(Key::Char('z'), false, false, false),
+                ],
+            )]),
+            ..Config::default()
+        }
     }
 
     #[test]

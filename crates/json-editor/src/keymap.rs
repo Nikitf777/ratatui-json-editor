@@ -173,12 +173,15 @@ mod tests {
             alt: false,
             shift: false,
         }));
-        assert!(!binding.matches(&Input {
-            key: Key::Char('s'),
-            ctrl: false,
-            alt: false,
-            shift: false,
-        }), "Ctrl+S is not s");
+        assert!(
+            !binding.matches(&Input {
+                key: Key::Char('s'),
+                ctrl: false,
+                alt: false,
+                shift: false,
+            }),
+            "Ctrl+S is not s"
+        );
     }
 
     #[test]

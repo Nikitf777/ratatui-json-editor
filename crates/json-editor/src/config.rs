@@ -20,20 +20,22 @@ pub(crate) struct Config {
     /// Save the file automatically on exit.
     #[serde(default)]
     pub(crate) autosave: bool,
-    /// The key each action runs on. An action with no entry keeps its default.
+    /// The keys each action runs on. An action with no entry keeps its
+    /// default.
     #[serde(default)]
     pub(crate) binds: Binds,
 }
 
-/// The key each action runs on.
+/// The keys each action runs on, in the order the config listed them.
 #[derive(Debug, Default)]
-pub(crate) struct Binds(pub(crate) Vec<(Action, Binding)>);
+pub(crate) struct Binds(pub(crate) Vec<(Action, Vec<Binding>)>);
 
 impl<'de> Deserialize<'de> for Binds {
-    /// Reads `{"<action>": {"key": ..., "ctrl": ..., ...}}`. Modifiers left
-    /// out are false, so a rebind never inherits the default's.
+    /// Reads `{"<action>": [ {"key": ..., "ctrl": ...}, ... ]}`. An action
+    /// can be bound to several keys. Modifiers left out are false, so a
+    /// rebind never inherits the default's.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        /// One action's binding as it is written in the config.
+        /// One key an action runs on, as it is written in the config.
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Entry {
@@ -47,40 +49,47 @@ impl<'de> Deserialize<'de> for Binds {
         }
         // The keys are the action names, so serde matches them against the
         // enum and reports an unknown one by name.
-        let raw = std::collections::BTreeMap::<Action, Entry>::deserialize(deserializer)?;
+        let raw = std::collections::BTreeMap::<Action, Vec<Entry>>::deserialize(deserializer)?;
         let mut binds = Vec::new();
-        for (action, entry) in raw {
-            let Some(key) = key_from_name(&entry.key) else {
+        for (action, entries) in raw {
+            if entries.is_empty() {
                 return Err(serde::de::Error::custom(format!(
-                    "unknown key {:?} for {:?}",
-                    entry.key, action
+                    "{action:?} has no keys bound to it"
                 )));
-            };
-            binds.push((
-                action,
-                Binding::from_json(key, entry.ctrl, entry.alt, entry.shift),
-            ));
+            }
+            let mut parsed = Vec::new();
+            for entry in entries {
+                let Some(key) = key_from_name(&entry.key) else {
+                    return Err(serde::de::Error::custom(format!(
+                        "unknown key {:?} for {action:?}",
+                        entry.key
+                    )));
+                };
+                parsed.push(Binding::from_json(key, entry.ctrl, entry.alt, entry.shift));
+            }
+            binds.push((action, parsed));
         }
         Ok(Binds(binds))
     }
 }
 
 impl Binds {
-    /// The configured binding of an action, if it has one.
-    fn get(&self, action: Action) -> Option<Binding> {
+    /// The configured keys of an action, if it has any.
+    fn get(&self, action: Action) -> Option<&[Binding]> {
         self.0
             .iter()
             .find(|(bound, _)| *bound == action)
-            .map(|(_, binding)| *binding)
+            .map(|(_, bindings)| bindings.as_slice())
     }
 }
 
 impl Config {
-    /// The key an action runs on: the configured one, or the default.
-    pub(crate) fn binding(&self, action: Action) -> Binding {
-        self.binds
-            .get(action)
-            .unwrap_or_else(|| default_binding(action))
+    /// The keys an action runs on: the configured ones, or its default.
+    pub(crate) fn bindings(&self, action: Action) -> Vec<Binding> {
+        match self.binds.get(action) {
+            Some(bindings) => bindings.to_vec(),
+            None => vec![default_binding(action)],
+        }
     }
 }
 
@@ -135,6 +144,11 @@ mod tests {
     use super::*;
     use ratatui_textarea::Key;
 
+    /// A config that is known to be good.
+    fn config_of(text: &str) -> Config {
+        parse(text).unwrap_or_else(|err| panic!("{text}: {err}"))
+    }
+
     #[test]
     fn config_defaults_to_autosave_off() {
         assert!(!parse("{}").unwrap().autosave);
@@ -152,59 +166,86 @@ mod tests {
     #[test]
     fn binds_override_the_defaults() {
         let config =
-            parse(r#"{"binds": {"add": {"key": "i", "ctrl": true}, "save": {"key": "w"}}}"#)
+            parse(r#"{"binds": {"add": [{"key": "i", "ctrl": true}], "save": [{"key": "w"}]}}"#)
                 .unwrap();
-        let add = config.binding(Action::Add);
-        assert_eq!(add.key, Key::Char('i'));
-        assert!(add.ctrl);
-        let save = config.binding(Action::Save);
         assert_eq!(
-            save,
-            Binding::plain(Key::Char('w')),
+            config.bindings(Action::Add),
+            vec![Binding::from_json(Key::Char('i'), true, false, false)]
+        );
+        assert_eq!(
+            config.bindings(Action::Save),
+            vec![Binding::plain(Key::Char('w'))],
             "save's Ctrl+S default is not inherited by the new key"
         );
     }
 
     #[test]
+    fn an_action_can_have_several_keys() {
+        let config = config_of(
+            r#"{"binds": {"save": [{"key": "s", "ctrl": true}, {"key": "S", "shift": true}]}}"#,
+        );
+        let binds = config.bindings(Action::Save);
+        assert_eq!(binds.len(), 2);
+        assert_eq!(
+            binds[0],
+            Binding::from_json(Key::Char('s'), true, false, false)
+        );
+        assert_eq!(
+            binds[1],
+            Binding::from_json(Key::Char('S'), false, false, true)
+        );
+    }
+
+    #[test]
     fn bind_modifiers_default_to_false() {
-        let config = parse(r#"{"binds": {"add": {"key": "i"}}}"#).unwrap();
-        assert_eq!(config.binding(Action::Add), Binding::plain(Key::Char('i')));
+        let config = config_of(r#"{"binds": {"add": [{"key": "i"}]}}"#);
+        assert_eq!(
+            config.bindings(Action::Add),
+            vec![Binding::plain(Key::Char('i'))]
+        );
     }
 
     #[test]
     fn a_named_modifier_is_taken_as_written() {
         // Naming a modifier sets it, and leaving it out means no modifier —
         // the same either way, so Ctrl is not silently kept.
-        let config = parse(r#"{"binds": {"save": {"key": "s", "ctrl": false}}}"#).unwrap();
-        assert_eq!(config.binding(Action::Save), Binding::plain(Key::Char('s')));
-
-        let config = parse(r#"{"binds": {"save": {"key": "s"}}}"#).unwrap();
-        assert_eq!(config.binding(Action::Save), Binding::plain(Key::Char('s')));
-
-        let config = parse(r#"{"binds": {"save": {"key": "s", "ctrl": true}}}"#).unwrap();
-        assert!(config.binding(Action::Save).ctrl);
+        let plain = vec![Binding::plain(Key::Char('s'))];
+        assert_eq!(
+            config_of(r#"{"binds": {"save": [{"key": "s", "ctrl": false}]}}"#)
+                .bindings(Action::Save),
+            plain
+        );
+        assert_eq!(
+            config_of(r#"{"binds": {"save": [{"key": "s"}]}}"#).bindings(Action::Save),
+            plain
+        );
+        assert_eq!(
+            config_of(r#"{"binds": {"save": [{"key": "s", "ctrl": true}]}}"#)
+                .bindings(Action::Save),
+            vec![Binding::from_json(Key::Char('s'), true, false, false)]
+        );
     }
 
     #[test]
     fn a_shifted_key_in_a_config_still_needs_shift() {
-        let config = parse(r#"{"binds": {"move_down": {"key": "n"}}}"#).unwrap();
+        let config = config_of(r#"{"binds": {"move_down": [{"key": "n"}]}}"#);
         assert!(
-            !config.binding(Action::MoveDown).shift,
+            !config.bindings(Action::MoveDown)[0].shift,
             "a plain n needs no shift"
         );
 
-        let config = parse(r#"{"binds": {"move_down": {"key": "N"}}}"#).unwrap();
-        let binding = config.binding(Action::MoveDown);
+        let config = config_of(r#"{"binds": {"move_down": [{"key": "N"}]}}"#);
+        let binding = config.bindings(Action::MoveDown)[0];
         assert_eq!(binding.key, Key::Char('N'));
         assert!(!binding.shift, "the character is already the shifted one");
     }
 
     #[test]
     fn an_action_with_no_binding_keeps_its_default() {
-        let config = parse(r#"{"binds": {"add": {"key": "i"}}}"#).unwrap();
+        let config = config_of(r#"{"binds": {"add": [{"key": "i"}]}}"#);
         assert_eq!(
-            config.binding(Action::Delete),
-            default_binding(Action::Delete)
+            config.bindings(Action::Delete),
+            vec![default_binding(Action::Delete)]
         );
     }
 
@@ -212,36 +253,60 @@ mod tests {
     fn action_names_are_snake_case() {
         // The names in the docs, checked against what serde accepts.
         for name in [
-            "save", "quit", "add", "delete", "move_up", "move_down", "move_across_up",
-            "move_across_down", "edit_value", "edit_key", "hide_block", "show_block",
-            "toggle_block", "select_up", "select_down", "select_left", "select_right",
-            "select_line_up", "select_line_down", "select_word_left", "select_word_right",
-            "select_first", "select_last", "page_up", "page_down", "edit_field", "menu",
+            "save",
+            "quit",
+            "add",
+            "delete",
+            "move_up",
+            "move_down",
+            "move_across_up",
+            "move_across_down",
+            "edit_value",
+            "edit_key",
+            "hide_block",
+            "show_block",
+            "toggle_block",
+            "select_up",
+            "select_down",
+            "select_left",
+            "select_right",
+            "select_line_up",
+            "select_line_down",
+            "select_word_left",
+            "select_word_right",
+            "select_first",
+            "select_last",
+            "page_up",
+            "page_down",
+            "edit_field",
+            "menu",
         ] {
-            let config = parse(&format!(r#"{{"binds": {{"{name}": {{"key": "x"}}}}}}"#))
-                .unwrap_or_else(|err| panic!("{name} should be an action: {err}"));
-            assert_eq!(config.binding(Action::Add), config.binding(Action::Add));
-            assert_ne!(config.binding(Action::Add), Binding::plain(Key::Char('q')));
+            // Parsing is the check: an unknown name is rejected outright, so
+            // every name in the docs being read here is a real action.
+            config_of(&format!(r#"{{"binds": {{"{name}": [{{"key": "x"}}]}}}}"#));
         }
     }
 
     #[test]
     fn an_unknown_action_is_named_in_the_error() {
-        let err = parse(r#"{"binds": {"nope": {"key": "x"}}}"#).unwrap_err();
+        let err = parse(r#"{"binds": {"nope": [{"key": "x"}]}}"#).unwrap_err();
         assert!(err.contains("nope"), "{err}");
     }
 
     #[test]
     fn binds_are_validated() {
         for bad in [
-            r#"{"binds": {"nope": {"key": "x"}}}"#,
-            r#"{"binds": {"add": {}}}"#,
-            r#"{"binds": {"add": {"key": 1}}}"#,
-            r#"{"binds": {"add": {"key": "x", "ctrl": 1}}}"#,
-            r#"{"binds": {"add": {"key": "x", "hyper": true}}}"#,
+            r#"{"binds": {"nope": [{"key": "x"}]}}"#,
+            r#"{"binds": {"add": []}}"#,
+            r#"{"binds": {"add": {"key": "x"}}}"#,
+            r#"{"binds": {"add": ["x"]}}"#,
+            r#"{"binds": {"add": [{}]}}"#,
+            r#"{"binds": {"add": [{"key": 1}]}}"#,
+            r#"{"binds": {"add": [{"key": "x", "ctrl": 1}]}}"#,
+            r#"{"binds": {"add": [{"key": "x", "hyper": true}]}}"#,
             r#"{"binds": {"add": "x"}}"#,
             r#"{"binds": []}"#,
-            r#"{"binds": {"add": {"key": "nonsense"}}}"#,
+            r#"{"binds": {"add": [{"key": "nonsense"}]}}"#,
         ] {
             assert!(parse(bad).is_err(), "{bad} should be rejected");
         }
@@ -260,10 +325,30 @@ mod tests {
             ("page_up", Key::PageUp),
             ("pagedown", Key::PageDown),
         ] {
-            let config = parse(&format!(r#"{{"binds": {{"add": {{"key": "{text}"}}}}}}"#))
-                .unwrap_or_else(|err| panic!("{text}: {err}"));
-            assert_eq!(config.binding(Action::Add).key, key, "{text}");
+            let config = config_of(&format!(r#"{{"binds": {{"add": [{{"key": "{text}"}}]}}}}"#));
+            assert_eq!(config.bindings(Action::Add)[0].key, key, "{text}");
         }
+    }
+
+    #[test]
+    fn several_keys_for_one_action_from_a_file() {
+        let dir = std::env::temp_dir().join("json-editor-multibind-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"binds": {"save": [{"key": "s", "ctrl": true}, {"key": "S", "shift": true}]}}"#,
+        )
+        .unwrap();
+        let config = load_config(Some(&path)).unwrap();
+        assert_eq!(
+            config.bindings(Action::Save),
+            vec![
+                Binding::from_json(Key::Char('s'), true, false, false),
+                Binding::from_json(Key::Char('S'), false, false, true),
+            ]
+        );
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
@@ -276,19 +361,22 @@ mod tests {
             &path,
             r#"{
                  "autosave": true,
-                 "binds": { "delete": { "key": "x", "ctrl": true } }
+                 "binds": { "delete": [{ "key": "x", "ctrl": true }] }
                }"#,
         )
         .unwrap();
 
         let config = load_config(Some(&path)).unwrap();
         assert!(config.autosave);
-        let delete = config.binding(Action::Delete);
-        assert_eq!(delete.key, Key::Char('x'));
-        assert!(delete.ctrl, "named in the config");
-        assert!(!delete.alt, "not named, so false");
-        assert!(!delete.shift, "not named, so false");
-        assert_eq!(config.binding(Action::Add), default_binding(Action::Add));
+        assert_eq!(
+            config.bindings(Action::Delete),
+            vec![Binding::from_json(Key::Char('x'), true, false, false)],
+            "the named key, with the modifier it names and none it does not"
+        );
+        assert_eq!(
+            config.bindings(Action::Add),
+            vec![default_binding(Action::Add)]
+        );
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -298,11 +386,11 @@ mod tests {
         let dir = std::env::temp_dir().join("json-editor-rebind-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
-        std::fs::write(&path, r#"{"binds": {"save": {"key": "w"}}}"#).unwrap();
+        std::fs::write(&path, r#"{"binds": {"save": [{"key": "w"}]}}"#).unwrap();
         let config = load_config(Some(&path)).unwrap();
         assert_eq!(
-            config.binding(Action::Save),
-            Binding::plain(Key::Char('w')),
+            config.bindings(Action::Save),
+            vec![Binding::plain(Key::Char('w'))],
             "w saves, with no Ctrl"
         );
         std::fs::remove_file(&path).unwrap();

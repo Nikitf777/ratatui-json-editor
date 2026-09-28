@@ -23,7 +23,10 @@
 //! ```json
 //! {
 //!   "autosave": true,
-//!   "binds": { "delete": { "key": "x", "ctrl": true } }
+//!   "binds": {
+//!     "delete": [ { "key": "x" } ],
+//!     "save":   [ { "key": "s", "ctrl": true }, { "key": "S", "shift": true } ]
+//!   }
 //! }
 //! ```
 //!
@@ -31,12 +34,13 @@
 //! off, quitting with unsaved changes shows a popup first (`q` quits without
 //! saving, `Ctrl+S` saves and quits, `Esc` cancels).
 //!
-//! `binds` moves actions to other keys. Each entry names an action and the key
-//! to run it on; `ctrl`, `alt` and `shift` are false unless the entry says
-//! otherwise, so a rebound action never inherits the modifiers of its default
-//! — `{"save": {"key": "w"}}` is a plain `w`, not `Ctrl+W`. A terminal sends
-//! `J`, `K` and `+` with Shift held, so a binding using one needs
-//! `"shift": true`. An action with no entry keeps its default. Names: `save`, `quit`, `add`,
+//! `binds` moves actions to other keys. Each entry names an action and the
+//! list of keys to run it on, so one action can have several. `ctrl`, `alt`
+//! and `shift` are false unless the entry says otherwise, so a rebound action
+//! never inherits the modifiers of its default — `[{"key": "w"}]` for save is
+//! a plain `w`, not `Ctrl+W`. A terminal sends `J`, `K` and `+` with Shift
+//! held, so a binding using one needs `"shift": true`. An action with no entry
+//! keeps its default. Names: `save`, `quit`, `add`,
 //! `delete`, `move_up`, `move_down`, `move_across_up`, `move_across_down`,
 //! `edit_value`, `edit_key`, `hide_block`, `show_block`, `toggle_block`,
 //! `select_up`, `select_down`, `select_left`, `select_right`, `select_line_up`,
