@@ -383,6 +383,73 @@ impl JsonEditorState {
         Ok(())
     }
 
+    /// Removes the selected entry but keeps what was inside it: its children
+    /// take its place among its siblings, one level up, so none is lost.
+    ///
+    /// `{"a": {"x": 1}, "b": 2}` becomes `{"x": 1, "b": 2}` — the opposite of
+    /// hiding a block, which only changes what is drawn.
+    ///
+    /// A node with nothing inside has nothing to move up, so this refuses it —
+    /// [`JsonEditorState::delete_entry`] is the one to use there. A child
+    /// whose key is already used beside the entry is refused too, as two
+    /// entries of an object cannot share a name.
+    pub fn unflatten_entry(&mut self) -> Result<(), EditError> {
+        if self.cursor.is_empty() {
+            return Err(EditError::Refused("cannot delete the root value"));
+        }
+        let cursor = self.cursor.clone();
+        let index = *cursor.last().unwrap();
+        let parent_path = &cursor[..cursor.len() - 1];
+        let children: Vec<(Option<String>, Json)> = match node_at(&self.root, &cursor) {
+            Json::Array(items) => items.iter().cloned().map(|item| (None, item)).collect(),
+            Json::Object(entries) => entries
+                .iter()
+                .map(|(key, value)| (Some(key.clone()), value.clone()))
+                .collect(),
+            _ => {
+                return Err(EditError::Refused(
+                    "only a container has children to lift",
+                ));
+            }
+        };
+        if children.is_empty() {
+            return Err(EditError::Refused(
+                "only a container with entries has children to lift",
+            ));
+        }
+        // A child cannot step into a place where its key is already taken.
+        if let Json::Object(entries) = node_at(&self.root, parent_path) {
+            for (key, _) in &children {
+                if entries
+                    .iter()
+                    .any(|(other, _)| Some(other) == key.as_ref())
+                {
+                    return Err(EditError::Refused(
+                        "a child's key is already used beside this entry",
+                    ));
+                }
+            }
+        }
+        // The entry leaves, and its children step into the gap it made.
+        detach(&mut self.root, &cursor);
+        let target = parent_path.to_vec();
+        for (at, (key, value)) in (index..).zip(children) {
+            match node_at_mut(&mut self.root, &target) {
+                // An item lifted out of an array has no name, so it is given
+                // one, the same text the input line would show for it.
+                Some(Json::Object(entries)) => {
+                    let key = key.unwrap_or_else(|| expose_value(&value).trim().to_string());
+                    entries.insert(at, (key, value));
+                }
+                Some(Json::Array(items)) => items.insert(at, value),
+                _ => break,
+            }
+        }
+        self.cursor = child_path(&target, index);
+        self.clamp_field();
+        Ok(())
+    }
+
     /// Moves the selected entry one position earlier among its siblings.
     pub fn move_entry_up(&mut self) -> Result<(), EditError> {
         self.move_entry(false)
@@ -1656,6 +1723,106 @@ mod tests {
         state.collapse_block();
         assert_eq!(state.line_count(), once, "already hidden");
         assert_valid(&state);
+    }
+
+    #[test]
+    fn unflattening_an_entry_lifts_its_children() {
+        // The children take the entry's place among its siblings, in order.
+        let mut state = doc(r#"{"a": {"x": 1, "y": 2}, "b": 3}"#);
+        state.select_down();
+        state.unflatten_entry().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"x": 1, "y": 2, "b": 3}"#).unwrap(),
+            "the wrapper is gone and its children are not"
+        );
+        assert_eq!(state.cursor_path(), [0], "on the first of them");
+        assert_valid(&state);
+
+        // Nested: deleting `inner` keeps its own children, so `deep` is left
+        // holding them rather than being emptied.
+        let mut state = doc(r#"{"deep": {"inner": {"k": 1}, "j": 2}, "z": 3}"#);
+        state.select_down();
+        state.select_down();
+        assert_eq!(state.cursor_path(), [0, 0], "inner");
+        state.unflatten_entry().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"deep": {"k": 1, "j": 2}, "z": 3}"#).unwrap()
+        );
+        assert_valid(&state);
+
+        // Deleting `deep` instead lifts its children a level further.
+        let mut state = doc(r#"{"deep": {"inner": {"k": 1}, "j": 2}, "z": 3}"#);
+        state.select_down();
+        state.unflatten_entry().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"inner": {"k": 1}, "j": 2, "z": 3}"#).unwrap()
+        );
+        assert_valid(&state);
+
+        // An array's items are moved, and where they land among named
+        // siblings they are given a name from their own text.
+        let mut state = doc(r#"{"a": [1, 2], "b": 3}"#);
+        state.select_down();
+        state.unflatten_entry().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"1": 1, "2": 2, "b": 3}"#).unwrap()
+        );
+        assert_valid(&state);
+
+        // Deleting an array nested in an array needs no name at all.
+        let mut state = doc("[[1, 2], [3]]");
+        state.select_down();
+        state.unflatten_entry().unwrap();
+        assert_eq!(state.root(), &Json::parse("[1, 2, [3]]").unwrap());
+        assert_valid(&state);
+    }
+
+    #[test]
+    fn unflattening_something_with_nothing_to_lift_is_refused() {
+        // A scalar has no children to lift; the plain delete is the one that
+        // fits.
+        let mut state = doc(r#"{"a": 1}"#);
+        state.select_down();
+        assert_eq!(
+            state.unflatten_entry(),
+            Err(EditError::Refused(
+                "only a container has children to lift"
+            ))
+        );
+        assert_eq!(state.root(), &Json::parse(r#"{"a": 1}"#).unwrap());
+
+        // An empty container: nothing to lift out of it.
+        let mut state = doc(r#"{"a": {}, "b": 1}"#);
+        state.select_down();
+        assert_eq!(
+            state.unflatten_entry(),
+            Err(EditError::Refused(
+                "only a container with entries has children to lift"
+            ))
+        );
+        assert_eq!(state.root(), &Json::parse(r#"{"a": {}, "b": 1}"#).unwrap());
+
+        // A child's key already used beside it: the move would collide.
+        let mut state = doc(r#"{"a": {"k": 1}, "k": 2}"#);
+        state.select_down();
+        assert_eq!(
+            state.unflatten_entry(),
+            Err(EditError::Refused(
+                "a child's key is already used beside this entry"
+            ))
+        );
+        assert_eq!(state.root(), &Json::parse(r#"{"a": {"k": 1}, "k": 2}"#).unwrap());
+
+        // The document's own root has nowhere to lift into.
+        let mut state = doc(r#"{"a": 1}"#);
+        assert_eq!(
+            state.unflatten_entry(),
+            Err(EditError::Refused("cannot delete the root value"))
+        );
     }
 
     #[test]

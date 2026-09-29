@@ -314,6 +314,10 @@ impl App {
                 self.do_delete();
                 false
             }
+            Action::Unflatten => {
+                self.do_unflatten();
+                false
+            }
             Action::Duplicate => {
                 self.do_duplicate();
                 false
@@ -475,6 +479,13 @@ impl App {
 
     fn do_delete(&mut self) {
         let result = self.state.delete_entry();
+        self.report(result);
+    }
+
+    /// Removes the selected entry but moves its children up, so nothing inside
+    /// it is lost.
+    fn do_unflatten(&mut self) {
+        let result = self.state.unflatten_entry();
         self.report(result);
     }
 
@@ -875,6 +886,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn capital_d_unflattens_the_selected_entry() {
+        let mut app = editor(r#"{"a": {"x": 1, "y": 2}, "b": 3}"#);
+        app.handle_key(key('j'));
+        assert_eq!(app.state.cursor_path(), [0], "a");
+        app.handle_key(shift_key('D'));
+        assert_eq!(
+            root(&app),
+            r#"{"x":1,"y":2,"b":3}"#,
+            "D keeps what was inside; plain d would have deleted it"
+        );
+
+        // A node with nothing inside says so rather than doing a plain delete.
+        let mut app = editor(r#"{"a": 1}"#);
+        app.handle_key(key('j'));
+        app.handle_key(shift_key('D'));
+        assert_eq!(root(&app), r#"{"a":1}"#, "the document is left alone");
+        assert!(app.message.is_some(), "the reason is shown");
     }
 
     #[test]
