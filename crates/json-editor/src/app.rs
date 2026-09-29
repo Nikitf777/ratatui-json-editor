@@ -104,7 +104,9 @@ impl App {
     /// Mouse: the scrollbars own their areas (clicks, arrows, thumb drags);
     /// clicks select in the tree (key vs value by position) and in the input
     /// line (which places the text cursor); the wheel scrolls.
-    pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) {
+    /// Returns `true` when the mouse event asks the app to quit, so a click on
+    /// a menu button that quits ends the session just as the key does.
+    pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
         // The scrollbars only see events that land on them. Offering a click
         // anywhere to the scrollbar would make a click on the track scroll,
         // which is not what a click in the tree should ever do.
@@ -119,7 +121,7 @@ impl App {
                     vbar.handle_event(self.scrollbar_rect, event, &mut self.scrollbar_interaction)
                 {
                     self.state.set_scroll(offset);
-                    return;
+                    return false;
                 }
             }
             if inside(self.hbar_rect, mouse) {
@@ -132,7 +134,7 @@ impl App {
                     hbar.handle_event(self.hbar_rect, event, &mut self.hbar_interaction)
                 {
                     self.state.set_scroll_x(offset);
-                    return;
+                    return false;
                 }
             }
         }
@@ -153,7 +155,9 @@ impl App {
                         }
                         self.menu.select();
                     }
-                    self.menu_actions();
+                    if self.menu_actions() {
+                        return true;
+                    }
                 } else {
                     if self.menu_group.is_some() {
                         self.menu.reset();
@@ -216,6 +220,7 @@ impl App {
             }
             _ => {}
         }
+        false
     }
 
     /// The unsaved-changes popup: quit anyway, save and quit, or cancel.
@@ -864,6 +869,56 @@ mod tests {
             app.state.scroll() < moved,
             "the arrow at the top scrolls back up"
         );
+    }
+
+    /// A click on a menu button: the title on the bar, then the row below.
+    /// The bar is one row tall and the dropdown hangs under it.
+    fn click_menu(app: &mut App, group: usize, row: u16) -> bool {
+        app.menu_rect = Rect::new(0, 0, 60, 1);
+        let x = crate::menu::title_x(group);
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x + 1,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x + 3,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn every_menu_button_works_when_clicked() {
+        // File > Save.
+        let mut app = editor(r#"{"a": 1}"#);
+        app.path = Some(std::path::PathBuf::from("/nonexistent/dir/x.json"));
+        assert!(!click_menu(&mut app, 0, 2), "Save does not quit");
+        assert!(app.message.is_some(), "Save reports what it did");
+
+        // Edit > Add entry.
+        let mut app = editor(r#"{"a": 1}"#);
+        assert!(!click_menu(&mut app, 1, 2), "Add does not quit");
+        assert!(app.mode == Mode::Edit, "Add starts naming the new entry");
+    }
+
+    #[test]
+    fn clicking_quit_in_the_menu_quits() {
+        // With no unsaved changes there is nothing to ask about, so the
+        // button should end the session on the first click.
+        let mut app = editor(r#"{"a": 1}"#);
+        let quit = click_menu(&mut app, 0, 3);
+        assert!(app.message.is_none() && !app.popup, "it really was Quit");
+        assert!(quit, "Quit ends the session");
+
+        // The same button with a file and changes asks first, like the key.
+        let mut app = editor(r#"{"a": 1}"#);
+        app.path = Some(std::path::PathBuf::from("/tmp/x.json"));
+        app.dirty = true;
+        assert!(!click_menu(&mut app, 0, 3), "it asks instead of quitting");
+        assert!(app.popup, "the unsaved-changes popup is up");
     }
 
     #[test]

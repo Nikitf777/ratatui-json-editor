@@ -217,7 +217,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<fs::File>>, app: &mut App
             Event::Paste(text) if app.mode == Mode::Edit => {
                 app.textarea.insert_str(&text);
             }
-            Event::Mouse(mouse) => app.handle_mouse(mouse),
+            Event::Mouse(mouse) if app.handle_mouse(mouse) => return Ok(()),
             _ => {}
         }
     }
