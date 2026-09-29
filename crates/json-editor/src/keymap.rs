@@ -122,6 +122,8 @@ defaults! {
     Delete => Binding::plain(Key::Char('d'));
     Duplicate => Binding::ctrl(Key::Char('d'));
     Unflatten => Binding::shifted(Key::Char('D'));
+    ValueToString => Binding::ctrl(Key::Char('t'));
+    StringToValue => Binding::ctrl(Key::Char('y'));
     MoveUp => Binding::shifted(Key::Char('K'));
     MoveDown => Binding::shifted(Key::Char('J'));
     MoveAcrossUp => Binding::shifted(Key::Char('H'));

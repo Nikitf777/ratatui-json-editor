@@ -323,6 +323,14 @@ impl App {
                 self.do_unflatten();
                 false
             }
+            Action::ValueToString => {
+                self.do_value_to_string();
+                false
+            }
+            Action::StringToValue => {
+                self.do_string_to_value();
+                false
+            }
             Action::Duplicate => {
                 self.do_duplicate();
                 false
@@ -484,6 +492,18 @@ impl App {
 
     fn do_delete(&mut self) {
         let result = self.state.delete_entry();
+        self.report(result);
+    }
+
+    /// Turns the selected value into a string holding its JSON text.
+    fn do_value_to_string(&mut self) {
+        let result = self.state.value_to_string();
+        self.report(result);
+    }
+
+    /// Turns a string into the value its text describes.
+    fn do_string_to_value(&mut self) {
+        let result = self.state.parse_value_text();
         self.report(result);
     }
 
@@ -941,6 +961,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn ctrl_t_and_ctrl_y_convert_between_a_value_and_its_text() {
+        let mut app = editor(r#"{"n": 42, "s": "hi"}"#);
+        app.handle_key(key('j'));
+        assert_eq!(app.state.cursor_path(), [0], "n");
+
+        app.handle_key(ctrl_key('t'));
+        assert_eq!(root(&app), r#"{"n":"42","s":"hi"}"#, "Ctrl+T keeps the JSON text");
+
+        app.handle_key(ctrl_key('y'));
+        assert_eq!(root(&app), r#"{"n":42,"s":"hi"}"#, "Ctrl+Y reads it back");
+
+        // On a string the other way, it explains rather than doing nothing.
+        app.handle_key(key('j'));
+        assert_eq!(app.state.cursor_path(), [1], "s");
+        app.handle_key(ctrl_key('t'));
+        assert_eq!(root(&app), r#"{"n":42,"s":"hi"}"#, "the document is untouched");
+        assert!(app.message.is_some(), "the reason is shown");
     }
 
     #[test]

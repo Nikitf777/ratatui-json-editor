@@ -784,6 +784,60 @@ impl JsonEditorState {
         &self.collapsed
     }
 
+    /// Turns the selected value into a string holding its JSON text: `42`
+    /// becomes `"42"`, `{"a": 1}` becomes `"{\"a\":1}"`.
+    ///
+    /// A string is left as it is — it is already its own text — so this is a
+    /// no-op on one, and says so rather than doing nothing quietly. The
+    /// opposite is [`JsonEditorState::parse_value_text`].
+    pub fn value_to_string(&mut self) -> Result<(), EditError> {
+        if self.field != Field::Value {
+            return Err(EditError::Refused(
+                "only a value can be turned into a string",
+            ));
+        }
+        if matches!(self.selected(), Json::String(_)) {
+            return Err(EditError::Refused("it is already a string"));
+        }
+        self.replace_value(Json::String(compact(self.selected())));
+        Ok(())
+    }
+
+    /// Turns a string into the value its text describes, the way
+    /// [`JsonEditorState::commit`] reads text: `"42"` becomes `42` and
+    /// `"{\"a\":1}"` becomes `{"a": 1}`.
+    ///
+    /// Text that describes nothing is refused, leaving the string alone. A
+    /// bare word is not read as a string here — that would make every string
+    /// a number or a boolean by accident — so a plain text string has to be
+    /// written as `\"42\"`, quotes and all.
+    pub fn parse_value_text(&mut self) -> Result<(), EditError> {
+        if self.field != Field::Value {
+            return Err(EditError::Refused(
+                "only a value can be read as text",
+            ));
+        }
+        let Json::String(text) = self.selected() else {
+            return Err(EditError::Refused("it is not a string to read"));
+        };
+        // A leading quote is what marks the text as JSON rather than a word.
+        let trimmed = text.trim();
+        let value = if trimmed.starts_with('"') {
+            Json::String(text.clone())
+        } else {
+            interpret_value(trimmed).map_err(EditError::InvalidJson)?
+        };
+        self.replace_value(value);
+        Ok(())
+    }
+
+    /// Replaces the selected value, keeping the cursor where it is.
+    fn replace_value(&mut self, value: Json) {
+        if let Some(node) = node_at_mut(&mut self.root, &self.cursor) {
+            *node = value;
+        }
+    }
+
     /// Returns the editable text of the selected field: the key's plain text,
     /// or the value in the forgiving form described by
     /// [`JsonEditorState::commit`] — a string's content without quotes, a
@@ -1889,6 +1943,83 @@ mod tests {
             Err(EditError::Refused("cannot duplicate the root value"))
         );
         assert_eq!(state.root(), &Json::parse(r#"{"a": 1}"#).unwrap());
+    }
+
+    #[test]
+    fn a_value_can_be_turned_into_text_and_back() {
+        let mut state = doc(r#"{"n": 42, "o": {"a": [1]}, "s": "hi"}"#);
+        state.select_down();
+        state.value_to_string().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"n": "42", "o": {"a": [1]}, "s": "hi"}"#).unwrap()
+        );
+        assert_valid(&state);
+
+        // And back again.
+        state.parse_value_text().unwrap();
+        assert_eq!(state.root(), &Json::parse(r#"{"n": 42, "o": {"a": [1]}, "s": "hi"}"#).unwrap());
+
+        // A container becomes one string holding its JSON text.
+        state.select_down();
+        assert_eq!(state.cursor_path(), [1], "o");
+        state.value_to_string().unwrap();
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"n": 42, "o": "{\"a\":[1]}", "s": "hi"}"#).unwrap()
+        );
+        state.parse_value_text().unwrap();
+        assert_eq!(state.root(), &Json::parse(r#"{"n": 42, "o": {"a": [1]}, "s": "hi"}"#).unwrap());
+        assert_valid(&state);
+    }
+
+    #[test]
+    fn turning_a_value_into_text_says_why_not() {
+        // A string is already its own text.
+        let mut state = doc(r#"{"s": "hi"}"#);
+        state.select_down();
+        assert_eq!(
+            state.value_to_string(),
+            Err(EditError::Refused("it is already a string"))
+        );
+        assert_eq!(state.root(), &Json::parse(r#"{"s": "hi"}"#).unwrap());
+
+        // Only a value, never a key.
+        let mut state = doc(r#"{"s": "hi"}"#);
+        state.select_down();
+        assert!(state.select_key(), "a property has a key");
+        assert_eq!(
+            state.value_to_string(),
+            Err(EditError::Refused("only a value can be turned into a string"))
+        );
+
+        // Reading text needs a string to read.
+        let mut state = doc(r#"{"n": 42}"#);
+        state.select_down();
+        assert_eq!(
+            state.parse_value_text(),
+            Err(EditError::Refused("it is not a string to read"))
+        );
+    }
+
+    #[test]
+    fn text_that_describes_nothing_is_refused() {
+        let mut state = doc(r#"["{oops"]"#);
+        state.select_down();
+        assert!(state.parse_value_text().is_err(), "that is not JSON");
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"["{oops"]"#).unwrap(),
+            "and the string is left alone"
+        );
+
+        // A plain word is read as a value, the way commit reads text, so
+        // quoting it is what keeps it a string.
+        let mut state = doc(r#"["true", "42"]"#);
+        state.select_down();
+        state.parse_value_text().unwrap();
+        assert_eq!(state.root(), &Json::parse(r#"[true, "42"]"#).unwrap());
+        assert_valid(&state);
     }
 
     #[test]

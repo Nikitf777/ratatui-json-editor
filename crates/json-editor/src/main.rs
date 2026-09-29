@@ -41,7 +41,7 @@
 //! a plain `w`, not `Ctrl+W`. A terminal sends `J`, `K` and `+` with Shift
 //! held, so a binding using one needs `"shift": true`. An action with no entry
 //! keeps its default. Names: `save`, `quit`, `add`, `duplicate`, `delete`,
-//! `unflatten`, `move_up`, `move_down`, `move_across_up`, `move_across_down`,
+//! `unflatten`, `value_to_string`, `string_to_value`, `move_up`, `move_down`, `move_across_up`, `move_across_down`,
 //! `edit_value`, `edit_key`, `hide_block`, `show_block`, `toggle_block`,
 //! `select_up`, `select_down`, `select_left`, `select_right`, `select_line_up`,
 //! `select_line_down`, `select_word_left`, `select_word_right`,
@@ -65,6 +65,7 @@
 //! D            delete entry, keeping its children
 //! H / L        move across the line above / below (into another object)
 //! J / K        reorder among siblings        Ctrl+S      save
+//! Ctrl+T       value to string              Ctrl+Y      string to value
 //! - / + / *    hide / show / toggle the block under the cursor
 //! PgUp/PgDn    scroll                       F10         menu bar (File / Edit)
 //! q / Esc      quit (saving the result)
