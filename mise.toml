@@ -1,0 +1,35 @@
+[tasks.build]
+run = "cargo build"
+alias = "b"
+
+[tasks.build-release]
+run = "cargo build --release"
+alias = "br"
+
+[tasks.run]
+run = "cargo run --bin json-editor"
+alias = "r"
+
+[tasks.run-release]
+run = "cargo run --bin json-editor --release"
+alias = "rr"
+
+[tasks.run-example]
+run = "cargo run --example demo"
+alias = "re"
+
+[tasks.run-example-release]
+run = "cargo run --example demo --release"
+alias = "rer"
+
+[tasks.test]
+run = "cargo test"
+alias = "t"
+
+[tasks.test-release]
+run = "cargo test --release"
+alias = "tr"
+
+[tasks.fmt]
+run = "cargo fmt"
+alias = "f"
