@@ -7,11 +7,17 @@ run = "cargo build --release"
 alias = "br"
 
 [tasks.run]
-run = "cargo run --bin json-editor"
+usage = '''
+arg "[args]" var=#true
+'''
+run = "cargo run --bin json-editor -- ${usage_args}"
 alias = "r"
 
 [tasks.run-release]
-run = "cargo run --bin json-editor --release"
+usage = '''
+arg "[args]" var=#true
+'''
+run = "cargo run --bin json-editor --release ${usage_args}"
 alias = "rr"
 
 [tasks.run-example]
