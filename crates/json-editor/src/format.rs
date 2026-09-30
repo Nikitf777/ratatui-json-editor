@@ -1,6 +1,6 @@
 //! Document printing. The library never pretty-prints; the app owns this.
 
-use ratatui_json_editor::{quote_string, Json};
+use ratatui_json_editor::{Json, quote_string};
 
 /// The app's pretty printer: two-space indent, `": "` and `", "`.
 pub(crate) fn pretty(value: &Json) -> String {

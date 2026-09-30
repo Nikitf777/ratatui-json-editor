@@ -19,8 +19,8 @@
 //! [`JsonEditorState::move_entry_down`]) maintain the same guarantee by
 //! construction.
 
-use crate::json::{quote_string, Json, ParseError};
-use crate::tree::{field_spans, flatten, row_width, Row, RowContent};
+use crate::json::{Json, ParseError, quote_string};
+use crate::tree::{Row, RowContent, field_spans, flatten, row_width};
 
 /// Why an editing operation was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,7 +119,9 @@ impl JsonEditorState {
         for &i in &self.cursor {
             match node {
                 Json::Object(entries) => {
-                    let Some((key, value)) = entries.get(i) else { break };
+                    let Some((key, value)) = entries.get(i) else {
+                        break;
+                    };
                     out.push_str(&format!("[{}]", quote_string(key)));
                     node = value;
                 }
@@ -407,9 +409,7 @@ impl JsonEditorState {
                 .map(|(key, value)| (Some(key.clone()), value.clone()))
                 .collect(),
             _ => {
-                return Err(EditError::Refused(
-                    "only a container has children to lift",
-                ));
+                return Err(EditError::Refused("only a container has children to lift"));
             }
         };
         if children.is_empty() {
@@ -420,10 +420,7 @@ impl JsonEditorState {
         // A child cannot step into a place where its key is already taken.
         if let Json::Object(entries) = node_at(&self.root, parent_path) {
             for (key, _) in &children {
-                if entries
-                    .iter()
-                    .any(|(other, _)| Some(other) == key.as_ref())
-                {
+                if entries.iter().any(|(other, _)| Some(other) == key.as_ref()) {
                     return Err(EditError::Refused(
                         "a child's key is already used beside this entry",
                     ));
@@ -585,14 +582,20 @@ impl JsonEditorState {
         }
         // The place the entry is going must be a container, and checking it
         // before anything moves leaves the document untouched if it is not.
-        if !matches!(node_at(&self.root, target), Json::Array(_) | Json::Object(_)) {
+        if !matches!(
+            node_at(&self.root, target),
+            Json::Array(_) | Json::Object(_)
+        ) {
             return Err(refuse());
         }
         let (mut key, value) = detach(&mut self.root, cursor);
         // The removal shifts every index after it among the same siblings, so
         // where the entry lands is worked out on the smaller tree.
         let target = shift_after_removal(target, cursor);
-        if !matches!(node_at(&self.root, &target), Json::Array(_) | Json::Object(_)) {
+        if !matches!(
+            node_at(&self.root, &target),
+            Json::Array(_) | Json::Object(_)
+        ) {
             return Err(refuse());
         }
         // An array item takes a name from its own text when it lands in an
@@ -627,7 +630,10 @@ impl JsonEditorState {
     /// passed over: closing brackets, scalars, and — for an entry with a key
     /// — arrays, which have no keys to keep it in.
     fn container_across(&self, cursor: &[usize], down: bool) -> Option<Vec<usize>> {
-        let with_key = matches!(node_at(&self.root, &cursor[..cursor.len() - 1]), Json::Object(_));
+        let with_key = matches!(
+            node_at(&self.root, &cursor[..cursor.len() - 1]),
+            Json::Object(_)
+        );
         let parent_path = &cursor[..cursor.len() - 1];
         let lines = flatten(&self.root, &self.collapsed);
         let is_close = |row: &Row| matches!(row.content, RowContent::Close { .. });
@@ -672,11 +678,18 @@ impl JsonEditorState {
         };
         // Lines that cannot hold the entry are passed over: closing brackets,
         // scalars, and — for an entry with a key — arrays.
-        let candidates = if down { lines.get(from..)? } else { &lines[..=from] };
+        let candidates = if down {
+            lines.get(from..)?
+        } else {
+            &lines[..=from]
+        };
         let line = if down {
             candidates.iter().find(|row| self.can_hold(row, with_key))?
         } else {
-            candidates.iter().rev().find(|row| self.can_hold(row, with_key))?
+            candidates
+                .iter()
+                .rev()
+                .find(|row| self.can_hold(row, with_key))?
         };
         Some(line.path.clone())
     }
@@ -813,9 +826,7 @@ impl JsonEditorState {
     /// written as `\"42\"`, quotes and all.
     pub fn parse_value_text(&mut self) -> Result<(), EditError> {
         if self.field != Field::Value {
-            return Err(EditError::Refused(
-                "only a value can be read as text",
-            ));
+            return Err(EditError::Refused("only a value can be read as text"));
         }
         let Json::String(text) = self.selected() else {
             return Err(EditError::Refused("it is not a string to read"));
@@ -846,7 +857,9 @@ impl JsonEditorState {
     /// [`JsonEditorState::commit`], or drop it to change nothing.
     pub fn edit(&self) -> String {
         match self.field {
-            Field::Key => entry_key(&self.root, &self.cursor).unwrap_or_default().to_string(),
+            Field::Key => entry_key(&self.root, &self.cursor)
+                .unwrap_or_default()
+                .to_string(),
             Field::Value => expose_value(self.selected()),
         }
     }
@@ -939,7 +952,11 @@ impl JsonEditorState {
     /// Widest row in display columns — the content length for horizontal
     /// scrollbars.
     pub fn content_width(&self) -> usize {
-        flatten(&self.root, &self.collapsed).iter().map(row_width).max().unwrap_or(0)
+        flatten(&self.root, &self.collapsed)
+            .iter()
+            .map(row_width)
+            .max()
+            .unwrap_or(0)
     }
 
     /// Horizontal offset of the first visible display column.
@@ -1193,11 +1210,7 @@ fn expose_value(value: &Json) -> String {
         Json::Null => "null".to_string(),
         Json::Array(items) if items.is_empty() => "[]".to_string(),
         Json::Object(entries) if entries.is_empty() => "{}".to_string(),
-        Json::Array(items) => items
-            .iter()
-            .map(compact)
-            .collect::<Vec<_>>()
-            .join(", "),
+        Json::Array(items) => items.iter().map(compact).collect::<Vec<_>>().join(", "),
         Json::Object(entries) => entries
             .iter()
             .map(|(key, value)| format!("{}: {}", quote_string(key), compact(value)))
@@ -1376,7 +1389,10 @@ mod tests {
         assert!(state.commit(entry("")).is_ok());
         assert_eq!(state.root(), &Json::parse(r#"{"a": ""}"#).unwrap());
 
-        assert!(state.commit(entry("null")).is_ok(), "null is the literal text");
+        assert!(
+            state.commit(entry("null")).is_ok(),
+            "null is the literal text"
+        );
         assert_eq!(state.root(), &Json::parse(r#"{"a": null}"#).unwrap());
     }
 
@@ -1395,12 +1411,18 @@ mod tests {
     fn commit_completes_unclosed_values() {
         let mut s = doc(r#"{"a": 1}"#);
         s.select_down();
-        assert!(s.commit(entry("\"some words ")).is_ok(), "missing closing quote");
+        assert!(
+            s.commit(entry("\"some words ")).is_ok(),
+            "missing closing quote"
+        );
         assert_eq!(s.root(), &Json::parse(r#"{"a": "some words "}"#).unwrap());
 
         let mut s = doc(r#"{"a": 1}"#);
         s.select_down();
-        assert!(s.commit(entry("\"")).is_ok(), "a lone quote means empty string");
+        assert!(
+            s.commit(entry("\"")).is_ok(),
+            "a lone quote means empty string"
+        );
         assert_eq!(s.root(), &Json::parse(r#"{"a": ""}"#).unwrap());
 
         let mut s = doc(r#"{"a": 1}"#);
@@ -1410,17 +1432,29 @@ mod tests {
 
         let mut s = doc(r#"{"a": 1}"#);
         s.select_down();
-        assert!(s.commit(entry("{\"x\": [9")).is_ok(), "missing several closers");
+        assert!(
+            s.commit(entry("{\"x\": [9")).is_ok(),
+            "missing several closers"
+        );
         assert_eq!(s.root(), &Json::parse(r#"{"a": {"x": [9]}}"#).unwrap());
 
         let mut s = doc(r#"{"a": 1}"#);
         s.select_down();
-        assert!(s.commit(entry("{")).is_ok(), "a lone brace means empty object");
+        assert!(
+            s.commit(entry("{")).is_ok(),
+            "a lone brace means empty object"
+        );
         assert_eq!(s.root(), &Json::parse(r#"{"a": {}}"#).unwrap());
         assert_valid(&s);
 
-        assert!(s.commit(entry("[1,]")).is_err(), "broken bracketed text is rejected");
-        assert!(s.commit(entry("{\"a\": }")).is_err(), "broken objects are rejected");
+        assert!(
+            s.commit(entry("[1,]")).is_err(),
+            "broken bracketed text is rejected"
+        );
+        assert!(
+            s.commit(entry("{\"a\": }")).is_err(),
+            "broken objects are rejected"
+        );
     }
 
     #[test]
@@ -1583,7 +1617,10 @@ mod tests {
         assert_valid(&state);
 
         // Out of a nested object, one level further up.
-        let mut state = at(r#"{"deep": {"inner": {"k": 1}, "j": 2}, "z": 3}"#, &[0, 0, 0]);
+        let mut state = at(
+            r#"{"deep": {"inner": {"k": 1}, "j": 2}, "z": 3}"#,
+            &[0, 0, 0],
+        );
         state.move_entry_across_down().unwrap();
         assert_eq!(
             state.root(),
@@ -1627,7 +1664,9 @@ mod tests {
         let mut state = at(r#"{"a": {"x": 1}, "b": 2}"#, &[0]);
         assert_eq!(
             state.move_entry_across_up(),
-            Err(EditError::Refused("already the first entry of the document"))
+            Err(EditError::Refused(
+                "already the first entry of the document"
+            ))
         );
         // The last entry of the document has no line to leave for either.
         let mut state = at(r#"{"a": 1, "b": 2}"#, &[1]);
@@ -1663,7 +1702,9 @@ mod tests {
         state.select_down();
         assert_eq!(
             state.move_entry_across_up(),
-            Err(EditError::Refused("already the first entry of the document"))
+            Err(EditError::Refused(
+                "already the first entry of the document"
+            ))
         );
         state.select_down();
         assert_eq!(
@@ -1714,8 +1755,16 @@ mod tests {
         assert_eq!(state.cursor_path(), [0], "a");
         state.collapse_block();
         assert!(state.is_collapsed());
-        assert_eq!(state.line_count(), before - 3, "a's two children and its close");
-        assert_eq!(state.root(), &Json::parse(src).unwrap(), "the document is untouched");
+        assert_eq!(
+            state.line_count(),
+            before - 3,
+            "a's two children and its close"
+        );
+        assert_eq!(
+            state.root(),
+            &Json::parse(src).unwrap(),
+            "the document is untouched"
+        );
 
         // The cursor still lands on a, and moving on visits b next.
         assert_eq!(state.cursor_path(), [0]);
@@ -1735,7 +1784,11 @@ mod tests {
         state.select_down();
         assert_eq!(state.cursor_path(), [0, 0], "x");
         state.collapse_block();
-        assert_eq!(state.line_count(), 6, "root, a, x and its close, y, a's close");
+        assert_eq!(
+            state.line_count(),
+            6,
+            "root, a, x and its close, y, a's close"
+        );
 
         // y is still reachable, and expanding x does not expand a.
         state.select_down();
@@ -1843,9 +1896,7 @@ mod tests {
         state.select_down();
         assert_eq!(
             state.unflatten_entry(),
-            Err(EditError::Refused(
-                "only a container has children to lift"
-            ))
+            Err(EditError::Refused("only a container has children to lift"))
         );
         assert_eq!(state.root(), &Json::parse(r#"{"a": 1}"#).unwrap());
 
@@ -1869,7 +1920,10 @@ mod tests {
                 "a child's key is already used beside this entry"
             ))
         );
-        assert_eq!(state.root(), &Json::parse(r#"{"a": {"k": 1}, "k": 2}"#).unwrap());
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"a": {"k": 1}, "k": 2}"#).unwrap()
+        );
 
         // The document's own root has nowhere to lift into.
         let mut state = doc(r#"{"a": 1}"#);
@@ -1958,7 +2012,10 @@ mod tests {
 
         // And back again.
         state.parse_value_text().unwrap();
-        assert_eq!(state.root(), &Json::parse(r#"{"n": 42, "o": {"a": [1]}, "s": "hi"}"#).unwrap());
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"n": 42, "o": {"a": [1]}, "s": "hi"}"#).unwrap()
+        );
 
         // A container becomes one string holding its JSON text.
         state.select_down();
@@ -1969,7 +2026,10 @@ mod tests {
             &Json::parse(r#"{"n": 42, "o": "{\"a\":[1]}", "s": "hi"}"#).unwrap()
         );
         state.parse_value_text().unwrap();
-        assert_eq!(state.root(), &Json::parse(r#"{"n": 42, "o": {"a": [1]}, "s": "hi"}"#).unwrap());
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"n": 42, "o": {"a": [1]}, "s": "hi"}"#).unwrap()
+        );
         assert_valid(&state);
     }
 
@@ -1990,7 +2050,9 @@ mod tests {
         assert!(state.select_key(), "a property has a key");
         assert_eq!(
             state.value_to_string(),
-            Err(EditError::Refused("only a value can be turned into a string"))
+            Err(EditError::Refused(
+                "only a value can be turned into a string"
+            ))
         );
 
         // Reading text needs a string to read.
@@ -2090,9 +2152,16 @@ mod tests {
     fn select_at_picks_the_node_and_field_under_a_pointer() {
         // Rows: 0 `{`, 1 `  "a": [`, 2 `    1`, 3 `  ]`, 4 `  "b": 2`, 5 `}`.
         let mut s = doc(r#"{"a": [1], "b": 2}"#);
-        assert!(s.select_at(3, 2), "closing rows select the block they close");
+        assert!(
+            s.select_at(3, 2),
+            "closing rows select the block they close"
+        );
         assert_eq!(s.cursor_path(), [0]);
-        assert_eq!(s.selected_field(), Field::Value, "the bracket is value text");
+        assert_eq!(
+            s.selected_field(),
+            Field::Value,
+            "the bracket is value text"
+        );
 
         assert!(s.select_at(5, 0), "the root's closing row selects the root");
         assert_eq!(s.cursor_path(), Vec::<usize>::new());
@@ -2206,12 +2275,20 @@ mod tests {
         assert!(s.select_key());
         s.select_down();
         assert_eq!(s.cursor_path(), [1]);
-        assert_eq!(s.selected_field(), Field::Key, "field follows the selection");
+        assert_eq!(
+            s.selected_field(),
+            Field::Key,
+            "field follows the selection"
+        );
         s.select_up();
         assert_eq!(s.selected_field(), Field::Key);
         s.select_up();
         assert_eq!(s.cursor_path(), Vec::<usize>::new());
-        assert_eq!(s.selected_field(), Field::Value, "clamped where no key exists");
+        assert_eq!(
+            s.selected_field(),
+            Field::Value,
+            "clamped where no key exists"
+        );
     }
 
     #[test]

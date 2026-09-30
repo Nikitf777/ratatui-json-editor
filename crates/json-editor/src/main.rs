@@ -93,6 +93,7 @@ use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser};
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -100,9 +101,8 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::Terminal;
 use ratatui_json_editor::{Json, JsonEditorState};
 use ratatui_textarea::Input;
 
@@ -138,9 +138,7 @@ fn main() -> io::Result<()> {
         Some(path) => match fs::read_to_string(path) {
             Ok(source) => (source, false),
             // A missing file starts a new document; it is created when saved.
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                (NEW_DOCUMENT.to_string(), true)
-            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => (NEW_DOCUMENT.to_string(), true),
             Err(err) => {
                 return Err(io::Error::new(
                     err.kind(),
@@ -148,11 +146,11 @@ fn main() -> io::Result<()> {
                 ));
             }
         },
-        None if !io::stdin().is_terminal() => {
-            (io::read_to_string(io::stdin())
+        None if !io::stdin().is_terminal() => (
+            io::read_to_string(io::stdin())
                 .map_err(|err| io::Error::new(err.kind(), format!("read stdin: {err}")))?,
-             false)
-        }
+            false,
+        ),
         None => (NEW_DOCUMENT.to_string(), false),
     };
     // Documents load through the same forgiving rules as editing: empty input
@@ -206,7 +204,10 @@ fn run(app: &mut App) -> io::Result<()> {
     result
 }
 
-fn event_loop(terminal: &mut Terminal<CrosstermBackend<fs::File>>, app: &mut App) -> io::Result<()> {
+fn event_loop(
+    terminal: &mut Terminal<CrosstermBackend<fs::File>>,
+    app: &mut App,
+) -> io::Result<()> {
     loop {
         terminal.draw(|frame| draw(frame, app))?;
         match event::read()? {

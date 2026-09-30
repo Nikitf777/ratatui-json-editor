@@ -1,12 +1,12 @@
 //! Drawing: the menu bar, the text input line, and the JSON editor panel.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
-use ratatui::Frame;
 use ratatui_json_editor::{
-    clip_spans, overlay, runs_to_spans, styled_runs, Field, JsonEditor, Run, ScrollMode,
+    Field, JsonEditor, Run, ScrollMode, clip_spans, overlay, runs_to_spans, styled_runs,
 };
 use ratatui_textarea::DataCursor;
 use tui_menu::Menu;
@@ -72,7 +72,11 @@ fn render_input_line(frame: &mut Frame, app: &mut App, area: Rect) {
         };
         let chars: Vec<char> = text.chars().collect();
         let runs = styled_runs(&text, &app.theme);
-        let spans = clip_spans(runs_to_spans(&chars, &runs, TAB_LEN), 0, inner.width as usize);
+        let spans = clip_spans(
+            runs_to_spans(&chars, &runs, TAB_LEN),
+            0,
+            inner.width as usize,
+        );
         frame.render_widget(Line::from(spans), inner);
     }
 }
@@ -148,7 +152,9 @@ fn render_input(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let buf = frame.buffer_mut();
     for row in 0..height {
-        let Some(line) = lines.get(top + row) else { break };
+        let Some(line) = lines.get(top + row) else {
+            break;
+        };
         let chars: Vec<char> = line.chars().collect();
         let mut runs: Vec<Run> = match field {
             Field::Value => styled_runs(line, &theme),
@@ -159,7 +165,11 @@ fn render_input(frame: &mut Frame, app: &mut App, area: Rect) {
             && start_row <= line_index
             && line_index <= end_row
         {
-            let start = if line_index == start_row { start_col } else { 0 };
+            let start = if line_index == start_row {
+                start_col
+            } else {
+                0
+            };
             let end = if line_index == end_row {
                 end_col
             } else {

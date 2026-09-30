@@ -5,7 +5,7 @@
 //! widget (rendering) and the state (viewport metrics) are built on it, so they
 //! can never disagree about line numbering.
 
-use crate::json::{quote_string, Json};
+use crate::json::{Json, quote_string};
 use unicode_width::UnicodeWidthStr;
 
 /// Display width of one indentation level in the rendered tree.
@@ -63,8 +63,14 @@ pub(crate) fn field_spans(row: &Row) -> (Option<(usize, usize)>, (usize, usize))
     });
     let value_width = match &row.content {
         // `[...]` and `{...}` take four columns, `[]` and `{}` one.
-        RowContent::Container { empty, collapsed, .. } => {
-            if *collapsed { 4 } else { usize::from(*empty) + 1 }
+        RowContent::Container {
+            empty, collapsed, ..
+        } => {
+            if *collapsed {
+                4
+            } else {
+                usize::from(*empty) + 1
+            }
         }
         RowContent::Scalar { value, .. } => scalar_text(value).width(),
         RowContent::Close { .. } => 1,
@@ -125,7 +131,15 @@ fn push(
                     break;
                 }
                 path.push(index);
-                push(item, None, path, depth + 1, index + 1 < items.len(), collapsed, out);
+                push(
+                    item,
+                    None,
+                    path,
+                    depth + 1,
+                    index + 1 < items.len(),
+                    collapsed,
+                    out,
+                );
                 path.pop();
             }
             if !empty && !hidden {

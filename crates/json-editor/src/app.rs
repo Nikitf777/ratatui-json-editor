@@ -970,7 +970,11 @@ mod tests {
         assert_eq!(app.state.cursor_path(), [0], "n");
 
         app.handle_key(ctrl_key('t'));
-        assert_eq!(root(&app), r#"{"n":"42","s":"hi"}"#, "Ctrl+T keeps the JSON text");
+        assert_eq!(
+            root(&app),
+            r#"{"n":"42","s":"hi"}"#,
+            "Ctrl+T keeps the JSON text"
+        );
 
         app.handle_key(ctrl_key('y'));
         assert_eq!(root(&app), r#"{"n":42,"s":"hi"}"#, "Ctrl+Y reads it back");
@@ -979,7 +983,11 @@ mod tests {
         app.handle_key(key('j'));
         assert_eq!(app.state.cursor_path(), [1], "s");
         app.handle_key(ctrl_key('t'));
-        assert_eq!(root(&app), r#"{"n":42,"s":"hi"}"#, "the document is untouched");
+        assert_eq!(
+            root(&app),
+            r#"{"n":42,"s":"hi"}"#,
+            "the document is untouched"
+        );
         assert!(app.message.is_some(), "the reason is shown");
     }
 
@@ -1104,7 +1112,10 @@ mod tests {
             }
             app.handle_key(key('k'));
         }
-        panic!("could not reach {path:?}, ended at {:?}", app.state.cursor_path());
+        panic!(
+            "could not reach {path:?}, ended at {:?}",
+            app.state.cursor_path()
+        );
     }
 
     fn click_cursor(app: &mut App, column: u16) {

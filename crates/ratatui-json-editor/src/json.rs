@@ -334,8 +334,7 @@ impl<'a> Parser<'a> {
             return Err(self.error("unpaired low surrogate in \\u escape"));
         }
         if !(0xD800..=0xDBFF).contains(&first) {
-            return char::from_u32(first as u32)
-                .ok_or_else(|| self.error("invalid \\u escape"));
+            return char::from_u32(first as u32).ok_or_else(|| self.error("invalid \\u escape"));
         }
         if self.peek() != Some('\\') {
             return Err(self.error("unpaired high surrogate in \\u escape"));
@@ -361,7 +360,8 @@ impl<'a> Parser<'a> {
                 .ok_or_else(|| self.error("incomplete \\u escape"))?;
             let digit = c
                 .to_digit(16)
-                .ok_or_else(|| self.error("invalid hex digit in \\u escape"))? as u16;
+                .ok_or_else(|| self.error("invalid hex digit in \\u escape"))?
+                as u16;
             value = value * 16 + digit;
         }
         Ok(value)
@@ -470,11 +470,18 @@ mod tests {
 
     #[test]
     fn number_grammar_is_strict() {
-        for valid in ["0", "-0", "1", "42", "-3", "1.5", "0.0", "1e3", "1E+3", "1.5e-3"] {
+        for valid in [
+            "0", "-0", "1", "42", "-3", "1.5", "0.0", "1e3", "1E+3", "1.5e-3",
+        ] {
             assert!(Number::new(valid).is_some(), "{valid} should be a number");
         }
-        for invalid in ["", "-", "+1", "01", "00", "1.", ".5", "1e", "1e+", "0x1", "1.5.6", "1,5"] {
-            assert!(Number::new(invalid).is_none(), "{invalid} should not be a number");
+        for invalid in [
+            "", "-", "+1", "01", "00", "1.", ".5", "1e", "1e+", "0x1", "1.5.6", "1,5",
+        ] {
+            assert!(
+                Number::new(invalid).is_none(),
+                "{invalid} should not be a number"
+            );
         }
     }
 
@@ -492,7 +499,9 @@ mod tests {
         let value = Json::parse(r#"["\"\\\/\b\f\n\r\t\u0041\u00e9\ud83d\ude00"]"#).unwrap();
         assert_eq!(
             value,
-            Json::Array(vec![Json::String("\"\\/\u{8}\u{c}\n\r\tAé\u{1f600}".into())])
+            Json::Array(vec![Json::String(
+                "\"\\/\u{8}\u{c}\n\r\tAé\u{1f600}".into()
+            )])
         );
         let text = "quote\" backslash\\ nl\n ctrl\u{1} uni é";
         assert_eq!(

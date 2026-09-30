@@ -48,12 +48,16 @@ impl Default for Theme {
             boolean: Style::default().fg(Color::LightMagenta),
             null: Style::default().fg(Color::Gray),
             punct: Style::default().fg(Color::DarkGray),
-            error: Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
+            error: Style::default()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD),
             cursor: Style::default().add_modifier(Modifier::REVERSED),
             cursor_line: Style::default().bg(Color::Rgb(40, 42, 54)),
             selection: Style::default().bg(Color::Rgb(70, 70, 100)),
             popup: Style::default().fg(Color::Cyan),
-            popup_title: Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD),
+            popup_title: Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
         }
     }
 }
@@ -155,7 +159,8 @@ pub fn lex_line(line: &str) -> Vec<Token> {
             }
             '-' | '0'..='9' => {
                 while i < n
-                    && (matches!(chars[i], '-' | '+' | '.' | 'e' | 'E') || chars[i].is_ascii_digit())
+                    && (matches!(chars[i], '-' | '+' | '.' | 'e' | 'E')
+                        || chars[i].is_ascii_digit())
                 {
                     i += 1;
                 }
@@ -181,7 +186,11 @@ pub fn lex_line(line: &str) -> Vec<Token> {
                 TokenKind::String
             }
         };
-        tokens.push(Token { start, end: i, kind });
+        tokens.push(Token {
+            start,
+            end: i,
+            kind,
+        });
     }
 
     // A string directly followed by a colon is an object key.
@@ -189,7 +198,9 @@ pub fn lex_line(line: &str) -> Vec<Token> {
         if tokens[idx].kind != TokenKind::String {
             continue;
         }
-        let next = tokens[idx + 1..].iter().find(|t| t.kind != TokenKind::Whitespace);
+        let next = tokens[idx + 1..]
+            .iter()
+            .find(|t| t.kind != TokenKind::Whitespace);
         if matches!(next, Some(t) if t.kind == TokenKind::Punct) {
             let between: String = chars[tokens[idx].end..next.unwrap().start].iter().collect();
             if between.chars().all(|c| c == ' ' || c == '\t')
@@ -340,7 +351,11 @@ mod tests {
         assert_eq!(kinds("hello")[0].1, TokenKind::String);
         assert_eq!(kinds("1.2.3")[0].1, TokenKind::String);
         assert_eq!(kinds("true")[0].1, TokenKind::Bool);
-        assert_eq!(kinds("\"open")[0].1, TokenKind::Error, "unclosed strings stay errors");
+        assert_eq!(
+            kinds("\"open")[0].1,
+            TokenKind::Error,
+            "unclosed strings stay errors"
+        );
     }
 
     #[test]

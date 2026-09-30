@@ -49,9 +49,9 @@ mod tree;
 mod widget;
 
 pub use highlight::{
-    clip_spans, highlight_json, lex_line, overlay, runs_to_spans, styled_runs, Run, Theme, Token,
-    TokenKind,
+    Run, Theme, Token, TokenKind, clip_spans, highlight_json, lex_line, overlay, runs_to_spans,
+    styled_runs,
 };
-pub use json::{quote_string, Json, Number, ParseError};
+pub use json::{Json, Number, ParseError, quote_string};
 pub use state::{EditError, Field, JsonEditorState};
 pub use widget::{JsonEditor, ScrollMode};

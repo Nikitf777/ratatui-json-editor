@@ -11,10 +11,10 @@ use ratatui_core::style::Style;
 use ratatui_core::text::{Line, Span};
 use ratatui_core::widgets::StatefulWidget;
 
-use crate::highlight::{clip_spans, Theme};
-use crate::json::{quote_string, Json};
+use crate::highlight::{Theme, clip_spans};
+use crate::json::{Json, quote_string};
 use crate::state::{Field, JsonEditorState};
-use crate::tree::{flatten, scalar_text, Row, RowContent, INDENT_WIDTH};
+use crate::tree::{INDENT_WIDTH, Row, RowContent, flatten, scalar_text};
 
 /// Who scrolls the tree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -304,12 +304,20 @@ mod tests {
 
         state.select_key();
         let buf = render(&mut state, 30, 5);
-        assert_eq!(buf[(3, 1)].style().bg, theme.selection.bg, "key highlighted");
+        assert_eq!(
+            buf[(3, 1)].style().bg,
+            theme.selection.bg,
+            "key highlighted"
+        );
         assert_ne!(buf[(7, 1)].style().bg, theme.selection.bg);
 
         state.select_value();
         let buf = render(&mut state, 30, 5);
-        assert_eq!(buf[(7, 1)].style().bg, theme.selection.bg, "value highlighted");
+        assert_eq!(
+            buf[(7, 1)].style().bg,
+            theme.selection.bg,
+            "value highlighted"
+        );
         assert_ne!(buf[(3, 1)].style().bg, theme.selection.bg);
     }
 
@@ -334,7 +342,11 @@ mod tests {
         // Row 4 is `  ]` — the block ends at the close bracket, and the
         // indent before it is inside the brackets.
         assert_eq!(buf[(2, 4)].style().bg, sel, "close bracket highlighted");
-        assert_eq!(buf[(0, 4)].style().bg, sel, "indent before the bracket highlighted");
+        assert_eq!(
+            buf[(0, 4)].style().bg,
+            sel,
+            "indent before the bracket highlighted"
+        );
         assert_ne!(buf[(2, 5)].style().bg, sel, "the next entry stays out");
 
         // Row 5 is `  "b": 3` — outside the block.
