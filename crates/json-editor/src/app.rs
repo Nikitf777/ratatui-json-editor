@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui_json_editor::{EditError, Field, JsonEditorState, Theme};
+use ratatui_json_editor::{EditError, Field, JsonEditorState, Theme, quote_string};
 use ratatui_textarea::{CursorMove, Input, Key, TextArea};
 use tui_menu::{MenuEvent, MenuState};
 use tui_scrollbar::{
@@ -14,8 +14,9 @@ use tui_scrollbar::{
     ScrollEvent, ScrollWheel,
 };
 
+use crate::clipboard::Clipboard;
 use crate::config::Config;
-use crate::format::pretty;
+use crate::format::{compact, pretty};
 use crate::menu::{Action, MENUS, build_menu, title_x};
 use crate::ui::{TAB_LEN, char_at, h_scrollbar, scrollbar};
 
@@ -47,6 +48,11 @@ pub(crate) struct App {
     pub(crate) menu: MenuState<Action>,
     pub(crate) menu_group: Option<usize>,
     pub(crate) menu_rect: Rect,
+    clipboard: Clipboard,
+    /// What the last copy action put on the clipboard, kept for the tests:
+    /// a headless run has no clipboard to read back.
+    #[cfg_attr(not(test), allow(dead_code))]
+    copied: Option<String>,
 }
 
 impl App {
@@ -78,6 +84,8 @@ impl App {
             menu: build_menu(),
             menu_group: None,
             menu_rect: Rect::default(),
+            clipboard: Clipboard::new(),
+            copied: None,
         }
     }
 
@@ -323,6 +331,22 @@ impl App {
                 self.do_unflatten();
                 false
             }
+            Action::CopyEntry => {
+                self.do_copy_entry();
+                false
+            }
+            Action::CopyKey => {
+                self.do_copy_key();
+                false
+            }
+            Action::CopyValue => {
+                self.do_copy_value();
+                false
+            }
+            Action::CopySelected => {
+                self.do_copy_selected();
+                false
+            }
             Action::ValueToString => {
                 self.do_value_to_string();
                 false
@@ -493,6 +517,70 @@ impl App {
     fn do_delete(&mut self) {
         let result = self.state.delete_entry();
         self.report(result);
+    }
+
+    /// Puts the selected entry on the clipboard as valid JSON. A property is
+    /// written as an object holding it, so the text parses on its own; an
+    /// entry with no key is just its value.
+    fn do_copy_entry(&mut self) {
+        self.copy(self.entry_json(), "entry");
+    }
+
+    /// Puts the selected key on the clipboard, plain text without quotes.
+    fn do_copy_key(&mut self) {
+        let Some(key) = self.key_text() else {
+            self.message = Some("only a property has a key to copy".to_string());
+            return;
+        };
+        self.copy(key, "key");
+    }
+
+    /// Puts the selected value on the clipboard, as JSON text: a string keeps
+    /// its quotes, a container its brackets.
+    fn do_copy_value(&mut self) {
+        self.copy(compact(self.state.selected()), "value");
+    }
+
+    /// Puts whatever the cursor is on — a key or a value — on the clipboard.
+    fn do_copy_selected(&mut self) {
+        match self.state.selected_field() {
+            Field::Key => self.do_copy_key(),
+            Field::Value => self.do_copy_value(),
+        }
+    }
+
+    /// The selected entry as it would be written in a document: `"key":
+    /// value` for a property, and the value alone when there is none.
+    ///
+    /// This is a JSON *entry*, not a standalone value — it is meant to be
+    /// pasted into another object and be valid there without any editing. The
+    /// key is quoted for that reason; nothing is wrapped around it.
+    ///
+    /// Whether a key or a value is selected makes no difference: this is the
+    /// whole entry either way.
+    fn entry_json(&self) -> String {
+        let value = compact(self.state.selected());
+        match self.state.key() {
+            Some(key) => format!("{}: {value}", quote_string(&key)),
+            None => value,
+        }
+    }
+
+    /// The selected key, if the cursor is on one.
+    fn key_text(&self) -> Option<String> {
+        match self.state.selected_field() {
+            Field::Key => Some(self.state.edit()),
+            Field::Value => None,
+        }
+    }
+
+    /// Puts text on the clipboard, saying what happened either way.
+    fn copy(&mut self, text: String, what: &str) {
+        self.copied = Some(text.clone());
+        self.message = match self.clipboard.set_text(&text) {
+            Ok(()) => Some(format!("copied the {what}: {text}")),
+            Err(err) => Some(err),
+        };
     }
 
     /// Turns the selected value into a string holding its JSON text.
@@ -807,6 +895,21 @@ mod tests {
         }
     }
 
+    /// What the last copy action put on the clipboard. A headless run has no
+    /// clipboard to read back, so the app records what it copied.
+    fn copied(app: &App) -> String {
+        app.copied.clone().expect("something was copied")
+    }
+
+    fn ctrl_key_shift(c: char) -> Input {
+        Input {
+            key: Key::Char(c),
+            ctrl: true,
+            alt: false,
+            shift: true,
+        }
+    }
+
     fn ctrl_key(c: char) -> Input {
         Input {
             key: Key::Char(c),
@@ -961,6 +1064,105 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn copying_an_entry_gives_an_entry_you_can_paste() {
+        // The whole entry, whichever half of it the cursor is on.
+        let mut app = editor(r#"{"key": [1, 2]}"#);
+        app.handle_key(key('j'));
+        for field in [Field::Key, Field::Value] {
+            app.handle_key(if field == Field::Key {
+                key('h')
+            } else {
+                key('l')
+            });
+            assert_eq!(app.state.selected_field(), field);
+            app.handle_key(ctrl_key('c'));
+            assert_eq!(
+                copied(&app),
+                r#""key": [1,2]"#,
+                "the same entry with {field:?} selected"
+            );
+        }
+        // No brackets around it: it is an entry, written as a document has it.
+        assert!(
+            !copied(&app).starts_with('{'),
+            "an entry is not wrapped in an object"
+        );
+        // And pasting it into another document is valid with no editing.
+        let pasted = format!("{{{}}}", copied(&app));
+        let pasted = ratatui_json_editor::Json::parse(&pasted).expect("valid once pasted");
+        assert_eq!(
+            pasted,
+            ratatui_json_editor::Json::parse(r#"{"key": [1, 2]}"#).unwrap(),
+            "the entry came across whole"
+        );
+
+        // A value with characters that need quoting keeps them quoted.
+        let mut app = editor(r#"{"a b": "x, y"}"#);
+        app.handle_key(key('j'));
+        app.handle_key(ctrl_key('c'));
+        assert_eq!(
+            copied(&app),
+            r#""a b": "x, y""#,
+            "both parts keep their quotes"
+        );
+
+        // Copying what is selected follows the cursor: the key on one field,
+        // the value on the other.
+        let mut app = editor(r#"{"key": [1, 2]}"#);
+        app.handle_key(key('j'));
+        app.handle_key(key('h'));
+        app.handle_key(ctrl_key_shift('C'));
+        assert_eq!(copied(&app), "key", "the key is under the cursor");
+        app.handle_key(key('l'));
+        app.handle_key(ctrl_key_shift('C'));
+        assert_eq!(copied(&app), "[1,2]", "now the value is");
+
+        // An entry with no key copies as its value alone.
+        let mut app = editor("[1, 2]");
+        app.handle_key(key('j'));
+        app.handle_key(ctrl_key('c'));
+        assert_eq!(copied(&app), "1");
+    }
+
+    #[test]
+    fn copying_a_key_or_a_value_needs_a_configured_key() {
+        // Neither is bound by default, so the letter keys start editing as
+        // they always do.
+        // `k` and `v` are taken by other actions — select left and nothing —
+        // rather than by the copy buttons, so the document is untouched.
+        let mut app = editor(r#"{"key": 1}"#);
+        app.handle_key(key('j'));
+        app.handle_key(key('k'));
+        app.handle_key(key('v'));
+        assert!(app.copied.is_none(), "nothing was copied");
+        assert_eq!(root(&app), r#"{"key":1}"#, "the document is untouched");
+
+        // The menu still runs them, and they put the right text there.
+        // Under the Clipboard title: row 2 is Copy entry, row 3 Copy key.
+        let mut app = editor(r#"{"key": 1}"#);
+        app.handle_key(key('j'));
+        app.handle_key(key('h'));
+        assert!(!click_menu(&mut app, 2, 3), "Copy key does not quit");
+        assert_eq!(copied(&app), "key", "the key, plain and unquoted");
+    }
+
+    #[test]
+    fn copying_a_key_where_there_is_none_says_so() {
+        // Run from the menu, since the action has no key of its own.
+        let mut app = editor("[1, 2]");
+        app.handle_key(key('j'));
+        assert_eq!(
+            app.state.selected_field(),
+            Field::Value,
+            "an array item has no key"
+        );
+        // Row 3 under the Clipboard title is Copy key.
+        assert!(!click_menu(&mut app, 2, 3), "Copy key does not quit");
+        assert!(app.copied.is_none(), "nothing was copied");
+        assert!(app.message.is_some(), "the reason is shown");
     }
 
     #[test]

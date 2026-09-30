@@ -41,7 +41,8 @@
 //! a plain `w`, not `Ctrl+W`. A terminal sends `J`, `K` and `+` with Shift
 //! held, so a binding using one needs `"shift": true`. An action with no entry
 //! keeps its default. Names: `save`, `quit`, `add`, `duplicate`, `delete`,
-//! `unflatten`, `value_to_string`, `string_to_value`, `move_up`, `move_down`, `move_across_up`, `move_across_down`,
+//! `unflatten`, `value_to_string`, `string_to_value`, `copy_entry`, `copy_key`,
+//! `copy_value`, `copy_selected`, `move_up`, `move_down`, `move_across_up`, `move_across_down`,
 //! `edit_value`, `edit_key`, `hide_block`, `show_block`, `toggle_block`,
 //! `select_up`, `select_down`, `select_left`, `select_right`, `select_line_up`,
 //! `select_line_down`, `select_word_left`, `select_word_right`,
@@ -50,8 +51,8 @@
 //! `space`, `backspace`, `delete`, `home`, `end`, `page_up`, `page_down`,
 //! `up`, `down`, `left`, `right`, `f1` through `f12`.
 //!
-//! A menu bar sits on top (`F10` opens it: File, Edit and View), then two
-//! panels:
+//! A menu bar sits on top (`F10` opens it: File, Edit, Clipboard and View),
+//! then two panels:
 //! the text input and the JSON tree below.
 //!
 //! Keys in normal mode:
@@ -65,7 +66,8 @@
 //! D            delete entry, keeping its children
 //! H / L        move across the line above / below (into another object)
 //! J / K        reorder among siblings        Ctrl+S      save
-//! Ctrl+T       value to string              Ctrl+Y      string to value
+//! Ctrl+T       value to string              Ctrl+C      copy the entry
+//! Ctrl+Shift+C  copy what is selected
 //! - / + / *    hide / show / toggle the block under the cursor
 //! PgUp/PgDn    scroll                       F10         menu bar (File / Edit)
 //! q / Esc      quit (saving the result)
@@ -82,6 +84,7 @@
 //! the scrollbars handle clicks, arrows and thumb drags.
 
 mod app;
+mod clipboard;
 mod config;
 mod format;
 mod keymap;

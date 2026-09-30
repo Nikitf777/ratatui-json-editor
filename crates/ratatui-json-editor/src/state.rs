@@ -199,6 +199,18 @@ impl JsonEditorState {
         self.field
     }
 
+    /// The key of the selected node, whether or not the key is the selected
+    /// field. `None` for the root value and for array elements, which have
+    /// none. A copy of the whole entry needs this: which half is under the
+    /// cursor is beside the question.
+    pub fn key(&self) -> Option<String> {
+        if !self.has_key() {
+            return None;
+        }
+        let key = entry_key(&self.root, &self.cursor)?.to_string();
+        Some(key)
+    }
+
     /// Selects the key of the cursor line. Returns whether the key is now
     /// selected — `false` when the node has no key (the root value or an array
     /// element).
@@ -2082,6 +2094,24 @@ mod tests {
         state.parse_value_text().unwrap();
         assert_eq!(state.root(), &Json::parse(r#"[true, "42"]"#).unwrap());
         assert_valid(&state);
+    }
+
+    #[test]
+    fn the_key_is_the_same_whichever_field_is_selected() {
+        let mut state = doc(r#"{"a": 1}"#);
+        state.select_down();
+        state.select_value();
+        assert_eq!(state.key().as_deref(), Some("a"), "the value is selected");
+
+        state.select_key();
+        assert_eq!(state.key().as_deref(), Some("a"), "the key is selected");
+        assert_eq!(state.edit(), "a", "and that is what the input line shows");
+
+        // An array item and the root have no key at all.
+        let mut state = doc("[1]");
+        state.select_down();
+        assert_eq!(state.key(), None);
+        assert_eq!(doc(r#"{"a": 1}"#).key(), None, "the root has no key");
     }
 
     #[test]

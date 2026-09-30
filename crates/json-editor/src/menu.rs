@@ -15,6 +15,10 @@ pub(crate) enum Action {
     Duplicate,
     Delete,
     Unflatten,
+    CopyEntry,
+    CopyKey,
+    CopyValue,
+    CopySelected,
     ValueToString,
     StringToValue,
     MoveUp,
@@ -53,6 +57,10 @@ impl Action {
             Action::Duplicate,
             Action::Delete,
             Action::Unflatten,
+            Action::CopyEntry,
+            Action::CopyKey,
+            Action::CopyValue,
+            Action::CopySelected,
             Action::ValueToString,
             Action::StringToValue,
             Action::MoveUp,
@@ -97,6 +105,12 @@ const EDIT_MENU: &[(Action, &str)] = &[
     (Action::EditValue, "Edit value"),
     (Action::EditKey, "Edit key"),
 ];
+const CLIPBOARD_MENU: &[(Action, &str)] = &[
+    (Action::CopyEntry, "Copy entry"),
+    (Action::CopyKey, "Copy key"),
+    (Action::CopyValue, "Copy value"),
+    (Action::CopySelected, "Copy selected"),
+];
 const VIEW_MENU: &[(Action, &str)] = &[
     (Action::HideBlock, "Hide block"),
     (Action::ShowBlock, "Show block"),
@@ -105,6 +119,7 @@ const VIEW_MENU: &[(Action, &str)] = &[
 pub(crate) const MENUS: &[(&str, &[(Action, &str)])] = &[
     ("File", FILE_MENU),
     ("Edit", EDIT_MENU),
+    ("Clipboard", CLIPBOARD_MENU),
     ("View", VIEW_MENU),
 ];
 

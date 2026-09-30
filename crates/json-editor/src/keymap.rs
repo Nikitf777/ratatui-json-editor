@@ -45,6 +45,17 @@ impl Binding {
         }
     }
 
+    /// A shifted key with Ctrl held as well: `Ctrl+Shift+C` arrives as `C`
+    /// with both modifiers set.
+    fn ctrl_shifted(key: Key) -> Self {
+        Self {
+            key,
+            ctrl: true,
+            shift: true,
+            ..Self::default()
+        }
+    }
+
     /// Whether an input event is this binding. The `shift` flag is a property
     /// of the key rather than a modifier, so a plain `a` and a `Shift+a` are
     /// different bindings and neither is caught by the other.
@@ -122,6 +133,13 @@ defaults! {
     Delete => Binding::plain(Key::Char('d'));
     Duplicate => Binding::ctrl(Key::Char('d'));
     Unflatten => Binding::shifted(Key::Char('D'));
+    CopyEntry => Binding::ctrl(Key::Char('c'));
+    // Copying a key or a value on its own is not bound by default: the two
+    // other copy buttons cover the usual cases, and `Ctrl+K`/`Ctrl+V` are
+    // free for a config to use instead.
+    CopyKey => Binding::plain(Key::Null);
+    CopyValue => Binding::plain(Key::Null);
+    CopySelected => Binding::ctrl_shifted(Key::Char('C'));
     ValueToString => Binding::ctrl(Key::Char('t'));
     StringToValue => Binding::ctrl(Key::Char('y'));
     MoveUp => Binding::shifted(Key::Char('K'));
@@ -154,11 +172,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_action_has_a_default() {
+    fn no_two_actions_share_a_default() {
+        // A key runs the first action bound to it, so a duplicate here would
+        // quietly make one of them unreachable.
+        let mut seen: Vec<(Action, Binding)> = Vec::new();
         for action in Action::all() {
-            // A binding that matches nothing is a mistake in the table.
-            assert_ne!(default_binding(action), Binding::plain(Key::Null));
+            let binding = default_binding(action);
+            if binding == Binding::plain(Key::Null) {
+                continue;
+            }
+            if let Some((other, _)) = seen.iter().find(|(_, taken)| *taken == binding) {
+                panic!("{other:?} and {action:?} are both bound to {binding:?}");
+            }
+            seen.push((action, binding));
         }
+    }
+
+    #[test]
+    fn an_unbound_action_has_no_key() {
+        // `Key::Null` is what an unbound action is given: no terminal sends
+        // it, so the action is only ever run from the menu or from a key the
+        // config gives it.
+        assert_eq!(default_binding(Action::CopyKey), Binding::plain(Key::Null));
+        assert_eq!(
+            default_binding(Action::CopyValue),
+            Binding::plain(Key::Null)
+        );
     }
 
     #[test]
