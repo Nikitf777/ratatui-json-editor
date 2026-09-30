@@ -755,17 +755,38 @@ impl App {
         quit
     }
 
-    /// Starts editing what is selected with the existing text selected, like
-    /// Excel's F2: typing replaces it and the cursor sits at the end.
+    /// Starts editing what is selected, like Excel's F2. A value arrives as
+    /// the JSON text it is written as, and only what is inside its quotes or
+    /// brackets is selected: the delimiters are what hold the type, so they
+    /// stay put while the contents are changed.
     fn begin_edit(&mut self) {
         self.message = None;
-        let text = self.state.edit();
+        let (text, inside) = self.edit_buffer();
         self.textarea = TextArea::from(text.split('\n'));
         self.textarea.set_tab_length(TAB_LEN as u8);
-        self.textarea.select_all();
+        match inside {
+            Some((first, last)) => {
+                self.textarea.move_cursor(CursorMove::Jump(0, first as u16));
+                self.textarea.start_selection();
+                self.textarea.move_cursor(CursorMove::Jump(last.0, last.1));
+            }
+            None => self.textarea.select_all(),
+        }
         self.edit_row = 0;
         self.edit_col = 0;
         self.mode = Mode::Edit;
+    }
+
+    /// The text to edit, and the cursor range its delimiters leave free. A key
+    /// is plain text, so all of it is the part to change; a value is JSON, and
+    /// only the text between its opening and closing delimiter is.
+    fn edit_buffer(&self) -> (String, Option<Inside>) {
+        let text = self.state.edit();
+        if self.state.selected_field() == Field::Key {
+            return (text, None);
+        }
+        let inside = inside_delimiters(&text);
+        (text, inside)
     }
 
     /// Starts editing with an empty text area, like typing over a cell in
@@ -820,6 +841,31 @@ impl App {
         self.textarea
             .move_cursor(CursorMove::Jump(row as u16, char_at(&line, col) as u16));
     }
+}
+
+/// The part of a value a selection should cover: the text between its
+/// delimiters, given as the column the selection starts on and the (row,
+/// column) it ends at.
+type Inside = (usize, (u16, u16));
+
+/// The cursor range inside a value's delimiters. `None` when the text is not a
+/// delimited value — a number, a key, a bare word — and so has no inside.
+fn inside_delimiters(text: &str) -> Option<Inside> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() < 2 {
+        return None;
+    }
+    // The opening and closing have to match: a value is written with both.
+    let matched = matches!(
+        (chars[0], chars[chars.len() - 1]),
+        ('"', '"') | ('{', '}') | ('[', ']')
+    );
+    if !matched {
+        return None;
+    }
+    // Start just past the opening delimiter, and end on the closing one, so
+    // the delimiters stay put and only the contents are selected.
+    Some((1, (0, (chars.len() - 1) as u16)))
 }
 
 fn inside(rect: Rect, mouse: MouseEvent) -> bool {
@@ -1064,6 +1110,107 @@ mod tests {
                 );
             }
         }
+    }
+
+/// Commits the edit, the way Enter does.
+fn enter(app: &mut App) {
+    app.handle_key(Input {
+        key: Key::Enter,
+        ctrl: false,
+        alt: false,
+        shift: false,
+    });
+}
+
+/// Cancels the edit, the way Esc does.
+fn esc() -> Input {
+    Input {
+        key: Key::Esc,
+        ctrl: false,
+        alt: false,
+        shift: false,
+    }
+}
+
+/// The buffer as it is shown while editing, and the text it starts with
+/// selected.
+fn editing(app: &App) -> (String, Option<String>) {
+        let text = app.textarea.lines().join("\n");
+        let range = app.textarea.selection_range();
+        let selected = range.map(|((sr, sc), (er, ec))| {
+            let lines = app.textarea.lines();
+            if sr == er {
+                lines[sr].chars().take(ec).skip(sc).collect()
+            } else {
+                text.clone()
+            }
+        });
+        (text, selected)
+    }
+
+    #[test]
+    fn a_string_is_edited_between_its_quotes() {
+        // `e` edits the value.
+        let mut app = editor(r#"{"s": "hello"}"#);
+        app.handle_key(key('j'));
+        app.handle_key(key('e'));
+        assert!(app.mode == Mode::Edit);
+        let (text, selected) = editing(&app);
+        assert_eq!(text, r#""hello""#, "the quotes are shown");
+        assert_eq!(selected.as_deref(), Some("hello"), "only the inside is selected");
+
+        // Submitting it untouched leaves it a string, even though `hello` is
+        // not a number: the quotes are what say so.
+        enter(&mut app);
+        assert_eq!(root(&app), r#"{"s":"hello"}"#, "still a string");
+
+        // A string of digits is the case that matters: without the quotes it
+        // would become a number.
+        let mut app = editor(r#"{"s": "42"}"#);
+        app.handle_key(key('j'));
+        app.handle_key(key('e'));
+        enter(&mut app);
+        assert_eq!(root(&app), r#"{"s":"42"}"#, "not a number");
+    }
+
+    #[test]
+    fn a_typed_string_still_becomes_one() {
+        let mut app = editor(r#"{"s": ""}"#);
+        app.handle_key(key('j'));
+        app.handle_key(key('e'));
+        // Replace the inside: the quotes stay put, so the value reads as a
+        // string and not as the number 7.
+        for c in "7".chars() {
+            app.textarea.insert_str(c.to_string());
+        }
+        enter(&mut app);
+        assert_eq!(root(&app), r#"{"s":"7"}"#, "a string, not the number 7");
+    }
+
+    #[test]
+    fn non_string_values_are_still_edited_whole() {
+        let mut app = editor(r#"{"n": 42, "o": {"a": 1}, "a": [1]}"#);
+        app.handle_key(key('j'));
+        app.handle_key(key('e'));
+        let (text, selected) = editing(&app);
+        assert_eq!(text, "42", "a number has no delimiters");
+        assert_eq!(selected.as_deref(), Some("42"), "all of it is selected");
+
+        // A container is shown whole, with only its inside selected.
+        app.handle_key(esc());
+        app.handle_key(key('j'));
+        app.handle_key(key('e'));
+        let (text, selected) = editing(&app);
+        assert_eq!(text, r#"{"a":1}"#, "an object keeps its brackets");
+        assert_eq!(selected.as_deref(), Some(r#""a":1"#), "only the inside is selected");
+
+        app.handle_key(esc());
+        app.handle_key(key('j'));
+        app.handle_key(key('j')); // past the object's own entry
+        app.handle_key(key('e'));
+        let (text, selected) = editing(&app);
+        assert_eq!(text, "[1]", "an array keeps its brackets");
+        assert_eq!(selected.as_deref(), Some("1"), "only the inside is selected");
     }
 
     #[test]

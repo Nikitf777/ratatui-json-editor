@@ -323,17 +323,42 @@ impl App {
         }
     }
 
-    /// Starts editing what is selected with the existing text selected, like
-    /// Excel's F2: typing replaces it and the cursor sits at the end.
+    /// Starts editing what is selected, like Excel's F2. A string arrives
+    /// with its quotes and only its contents are selected, so submitting it
+    /// untouched keeps it a string.
     fn begin_edit(&mut self) {
         self.message = None;
         let text = self.state.edit();
         self.textarea = TextArea::from(text.split('\n'));
         self.textarea.set_tab_length(TAB_LEN as u8);
-        self.textarea.select_all();
+        match self.inside_delimiters(&text) {
+            // Between the delimiters: the contents are the part to change.
+            Some((first, last)) => {
+                self.textarea.move_cursor(CursorMove::Jump(0, first as u16));
+                self.textarea.start_selection();
+                self.textarea
+                    .move_cursor(CursorMove::Jump(last.0, last.1));
+            }
+            None => self.textarea.select_all(),
+        }
         self.edit_row = 0;
         self.edit_col = 0;
         self.mode = Mode::Edit;
+    }
+
+    /// The part of a delimited value a selection should cover: the text
+    /// between its opening and closing quote or bracket. A number has none, so
+    /// the whole of it is selected instead.
+    fn inside_delimiters(&self, text: &str) -> Option<(usize, (u16, u16))> {
+        let chars: Vec<char> = text.chars().collect();
+        let closing = match chars.first()? {
+            '"' => '"',
+            '{' => '}',
+            '[' => ']',
+            _ => return None,
+        };
+        (chars.len() > 1 && chars[chars.len() - 1] == closing)
+            .then_some((1, (0, (chars.len() - 1) as u16)))
     }
 
     /// Starts editing with an empty text area, like typing over a cell in

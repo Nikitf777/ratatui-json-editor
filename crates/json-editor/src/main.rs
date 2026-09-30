@@ -78,6 +78,14 @@
 //! down / up, `Tab` / `Shift+Tab` to commit and select left / right, and `Esc`
 //! to cancel. Invalid text is never committed.
 //!
+//! What is edited is the value's JSON text, shown whole: a string with its
+//! quotes, a container with its brackets. Only the text between those
+//! delimiters is selected, so submitting a value untouched keeps its type —
+//! `"42"` does not turn into the number 42, and `{"a": 1}` stays an object.
+//! To change a type, select its delimiters and type over them. A number,
+//! `true` and the rest have no delimiters, so all of it is selected and typing
+//! over it changes the type.
+//!
 //! Mouse: click the menu bar to open its buttons, click in the tree to select
 //! the key or value under the pointer — a hidden block opens on a second
 //! click, once it is selected — click the input line to place the text cursor, wheel to scroll, and

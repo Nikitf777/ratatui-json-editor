@@ -49,6 +49,8 @@ fn render_input_line(frame: &mut Frame, app: &mut App, area: Rect) {
         (Mode::Normal, Field::Value) => " JSON text (value selected) ",
         (Mode::Normal, Field::Key) => " Plain text (key selected) ",
     };
+    // A string is shown with its quotes and only its inside is selected, so
+    // the title says which of the two is being changed.
     let mut title = vec![Span::styled(label, app.theme.popup_title)];
     if let Some(message) = &app.message {
         title.push(Span::styled(

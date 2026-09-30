@@ -824,7 +824,7 @@ impl JsonEditorState {
         if matches!(self.selected(), Json::String(_)) {
             return Err(EditError::Refused("it is already a string"));
         }
-        self.replace_value(Json::String(compact(self.selected())));
+        self.replace_value(Json::String(expose_value(self.selected())));
         Ok(())
     }
 
@@ -861,12 +861,21 @@ impl JsonEditorState {
         }
     }
 
-    /// Returns the editable text of the selected field: the key's plain text,
-    /// or the value in the forgiving form described by
-    /// [`JsonEditorState::commit`] — a string's content without quotes, a
-    /// container's items without the outer brackets. Hand it to whatever input
-    /// widget you like and pass the result back to
-    /// [`JsonEditorState::commit`], or drop it to change nothing.
+    /// Returns the editable text of the selected field: the full JSON text of
+    /// a value, or a key's plain text. Hand it to whatever input widget you
+    /// like and pass the result back to [`JsonEditorState::commit`], or drop it
+    /// to change nothing.
+    ///
+    /// A value is written exactly as it would be in the document — a string
+    /// with its quotes, a container with its brackets, everything else bare.
+    /// Nothing is left off, so one value looks like another and a consumer
+    /// does not have to know which kind it is to show it.
+    ///
+    /// The quotes are what make the round trip safe: an untouched `"42"` is
+    /// submitted as a string, not read as the number 42. To change a value's
+    /// type, select its quotes or brackets and type over them.
+    ///
+    /// A key is not JSON on its own, so it comes back as plain text.
     pub fn edit(&self) -> String {
         match self.field {
             Field::Key => entry_key(&self.root, &self.cursor)
@@ -1213,26 +1222,9 @@ fn parse_completing(text: &str) -> Result<Json, ParseError> {
     })
 }
 
-/// The editable text of a value: see [`JsonEditorState::edit`].
+/// The editable text of a value: the JSON text it is written as, nothing
+/// left off. See [`JsonEditorState::edit`].
 fn expose_value(value: &Json) -> String {
-    match value {
-        Json::String(s) => s.clone(),
-        Json::Number(n) => n.to_string(),
-        Json::Bool(b) => b.to_string(),
-        Json::Null => "null".to_string(),
-        Json::Array(items) if items.is_empty() => "[]".to_string(),
-        Json::Object(entries) if entries.is_empty() => "{}".to_string(),
-        Json::Array(items) => items.iter().map(compact).collect::<Vec<_>>().join(", "),
-        Json::Object(entries) => entries
-            .iter()
-            .map(|(key, value)| format!("{}: {}", quote_string(key), compact(value)))
-            .collect::<Vec<_>>()
-            .join(", "),
-    }
-}
-
-/// Compact JSON text of a value, for nested items in [`expose_value`].
-fn compact(value: &Json) -> String {
     let mut out = String::new();
     value.write_compact(&mut out);
     out
@@ -1361,13 +1353,17 @@ mod tests {
     #[test]
     fn edit_returns_the_selected_fields_text() {
         let mut state = doc(r#"{"a": [1], "b": null}"#);
-        assert_eq!(state.edit(), "\"a\": [1], \"b\": null", "root value");
+        assert_eq!(
+            state.edit(),
+            r#"{"a":[1],"b":null}"#,
+            "the root, with the brackets it is written with"
+        );
 
         state.select_down();
         assert!(state.select_key());
         assert_eq!(state.edit(), "a");
         assert!(state.select_value());
-        assert_eq!(state.edit(), "1", "array items without brackets");
+        assert_eq!(state.edit(), "[1]", "an array keeps its brackets");
 
         state.select_down();
         assert_eq!(state.edit(), "1");
@@ -1377,6 +1373,30 @@ mod tests {
         assert_eq!(state.edit(), "b");
         assert!(state.select_value());
         assert_eq!(state.edit(), "null", "null is the literal text");
+    }
+
+    #[test]
+    fn the_editing_text_keeps_a_strings_quotes() {
+        let mut state = doc(r#"{"s": "42", "n": 42, "o": {"a": 1}}"#);
+
+        // A string comes back quoted, which is what keeps its type.
+        state.select_down();
+        state.select_value();
+        assert_eq!(state.edit(), r#""42""#);
+
+        // Submitting it unchanged leaves it a string.
+        state.commit(state.edit()).unwrap();
+        assert_eq!(state.root(), &Json::parse(r#"{"s": "42", "n": 42, "o": {"a": 1}}"#).unwrap());
+
+        // Everything else is written as it is in the document.
+        state.select_down();
+        assert_eq!(state.edit(), "42", "a number is bare");
+        state.select_down();
+        assert_eq!(state.edit(), r#"{"a":1}"#, "a container keeps its brackets");
+
+        // A key is not JSON, so it is plain text.
+        state.select_key();
+        assert_eq!(state.edit(), "o");
     }
 
     #[test]
