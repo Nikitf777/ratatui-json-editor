@@ -1072,6 +1072,40 @@ mod tests {
     }
 
     #[test]
+    fn drawing_never_panics_on_a_short_terminal() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        // A menu that is taller than the screen used to be drawn off the end
+        // of the buffer, which panicked. Every size has to draw, with and
+        // without a menu open.
+        for (w, h) in [
+            (60, 10),
+            (60, 6),
+            (60, 5),
+            (60, 4),
+            (60, 3),
+            (60, 2),
+            (60, 1),
+            (20, 5),
+            (4, 4),
+            (1, 1),
+        ] {
+            for menu in [None, Some(0), Some(1), Some(2), Some(3)] {
+                let mut app = editor(r#"{"a": {"x": 1}, "b": [1, 2]}"#);
+                let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+                if let Some(group) = menu {
+                    app.open_menu(group);
+                    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+                }
+                // And with the unsaved-changes popup up as well.
+                app.popup = true;
+                terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn a_click_never_scrolls_the_tree() {
         let mut app = long_editor();
         for row in 0..10 {

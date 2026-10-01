@@ -30,13 +30,48 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     render_input_line(frame, app, input);
     render_editor(frame, app, editor);
     // Drawn last so its dropdowns float above the panels.
-    frame.render_stateful_widget(Menu::new(), menu, &mut app.menu);
+    render_menu(frame, app, menu);
 
     if app.popup {
-        let popup = Popup::new("q: quit without saving\nCtrl+S: save and quit\nEsc: cancel")
-            .title(" Unsaved changes ");
-        frame.render_widget(popup, frame.area());
+        // `tui-popup` sizes itself to its text and does not stop at the edge
+        // of the screen either, so it is only drawn when the room is there.
+        if frame.area().height >= POPUP_HEIGHT && frame.area().width >= POPUP_WIDTH {
+            let popup = Popup::new("q: quit without saving\nCtrl+S: save and quit\nEsc: cancel")
+                .title(" Unsaved changes ");
+            frame.render_widget(popup, frame.area());
+        }
     }
+}
+
+/// What the unsaved-changes popup needs for its text and border: three lines
+/// and its widest line.
+const POPUP_HEIGHT: u16 = 3;
+const POPUP_WIDTH: u16 = 32;
+
+/// The menu bar and its dropdown.
+///
+/// `tui-menu` writes each dropdown item at a fixed row below the bar and does
+/// not stop at the bottom of the screen, so on a terminal too short for the
+/// dropdown it would write past the buffer and panic. When that room is not
+/// there the menu is left undrawn rather than drawn off the screen.
+fn render_menu(frame: &mut Frame, app: &mut App, area: Rect) {
+    let area = area.intersection(frame.area());
+    if area.is_empty() {
+        return;
+    }
+    if let Some(group) = app.menu_group
+        && frame.area().height < menu_rows_needed(group)
+    {
+        return;
+    }
+    frame.render_stateful_widget(Menu::new(), area, &mut app.menu);
+}
+
+/// The rows the bar and the open dropdown take: the bar, then a border, the
+/// buttons, and a closing border.
+fn menu_rows_needed(group: usize) -> u16 {
+    let buttons = crate::menu::MENUS[group].1.len() as u16;
+    1 + 1 + buttons + 1
 }
 
 /// The text input: a framed full-width box, one text row tall. While editing
