@@ -323,42 +323,21 @@ impl App {
         }
     }
 
-    /// Starts editing what is selected, like Excel's F2. A string arrives
-    /// with its quotes and only its contents are selected, so submitting it
-    /// untouched keeps it a string.
+    /// Starts editing what is selected, like Excel's F2. A value arrives as
+    /// the JSON text it is written as, and only the text between its
+    /// delimiters is selected, so submitting it untouched keeps its type.
     fn begin_edit(&mut self) {
         self.message = None;
         let text = self.state.edit();
         self.textarea = TextArea::from(text.split('\n'));
         self.textarea.set_tab_length(TAB_LEN as u8);
-        match self.inside_delimiters(&text) {
-            // Between the delimiters: the contents are the part to change.
-            Some((first, last)) => {
-                self.textarea.move_cursor(CursorMove::Jump(0, first as u16));
-                self.textarea.start_selection();
-                self.textarea
-                    .move_cursor(CursorMove::Jump(last.0, last.1));
-            }
-            None => self.textarea.select_all(),
-        }
+        let range = selection_range(&text);
+        self.textarea.move_cursor(CursorMove::Jump(0, range.0));
+        self.textarea.start_selection();
+        self.textarea.move_cursor(CursorMove::Jump(0, range.1));
         self.edit_row = 0;
         self.edit_col = 0;
         self.mode = Mode::Edit;
-    }
-
-    /// The part of a delimited value a selection should cover: the text
-    /// between its opening and closing quote or bracket. A number has none, so
-    /// the whole of it is selected instead.
-    fn inside_delimiters(&self, text: &str) -> Option<(usize, (u16, u16))> {
-        let chars: Vec<char> = text.chars().collect();
-        let closing = match chars.first()? {
-            '"' => '"',
-            '{' => '}',
-            '[' => ']',
-            _ => return None,
-        };
-        (chars.len() > 1 && chars[chars.len() - 1] == closing)
-            .then_some((1, (0, (chars.len() - 1) as u16)))
     }
 
     /// Starts editing with an empty text area, like typing over a cell in
@@ -752,6 +731,16 @@ fn scroll_event(mouse: MouseEvent) -> Option<ScrollEvent> {
         _ => return None,
     };
     Some(event)
+}
+
+/// The part of a value a selection should cover: the text between its
+/// delimiters when it has any, and the whole of it when it has not.
+fn selection_range(text: &str) -> (u16, u16) {
+    let chars: Vec<char> = text.chars().collect();
+    if matches!(chars.first(), Some('"' | '{' | '[')) {
+        return (1, chars.len() as u16 - 1);
+    }
+    (0, chars.len() as u16)
 }
 
 fn inside(rect: Rect, mouse: MouseEvent) -> bool {

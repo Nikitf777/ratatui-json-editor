@@ -1386,7 +1386,10 @@ mod tests {
 
         // Submitting it unchanged leaves it a string.
         state.commit(state.edit()).unwrap();
-        assert_eq!(state.root(), &Json::parse(r#"{"s": "42", "n": 42, "o": {"a": 1}}"#).unwrap());
+        assert_eq!(
+            state.root(),
+            &Json::parse(r#"{"s": "42", "n": 42, "o": {"a": 1}}"#).unwrap()
+        );
 
         // Everything else is written as it is in the document.
         state.select_down();
