@@ -1,6 +1,10 @@
 [tasks.build]
-run = "cargo build"
+run = "CARGO_PROFILE_DEV_DEBUG=false cargo build"
 alias = "b"
+
+[tasks.build-debug]
+run = "CARGO_PROFILE_DEV_DEBUG=true cargo build"
+alias = "bd"
 
 [tasks.build-release]
 run = "cargo build --release"
@@ -10,8 +14,15 @@ alias = "br"
 usage = '''
 arg "[args]" var=#true
 '''
-run = "cargo run --bin json-editor -- ${usage_args}"
+run = "CARGO_PROFILE_DEV_DEBUG=false cargo run --bin json-editor -- ${usage_args}"
 alias = "r"
+
+[tasks.run-debug]
+usage = '''
+arg "[args]" var=#true
+'''
+run = "CARGO_PROFILE_DEV_DEBUG=true cargo run --bin json-editor -- ${usage_args}"
+alias = "rd"
 
 [tasks.run-release]
 usage = '''
@@ -21,16 +32,24 @@ run = "cargo run --bin json-editor --release ${usage_args}"
 alias = "rr"
 
 [tasks.run-example]
-run = "cargo run --example demo"
+run = "CARGO_PROFILE_DEV_DEBUG=false cargo run --example demo"
 alias = "re"
+
+[tasks.run-example-debug]
+run = "CARGO_PROFILE_DEV_DEBUG=true cargo run --example demo"
+alias = "red"
 
 [tasks.run-example-release]
 run = "cargo run --example demo --release"
 alias = "rer"
 
 [tasks.test]
-run = "cargo test"
+run = "CARGO_PROFILE_DEV_DEBUG=false cargo test"
 alias = "t"
+
+[tasks.test-debug]
+run = "CARGO_PROFILE_DEV_DEBUG=true cargo test"
+alias = "td"
 
 [tasks.test-release]
 run = "cargo test --release"

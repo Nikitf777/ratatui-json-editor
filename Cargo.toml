@@ -1,3 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/ratatui-json-editor", "crates/json-editor"]
+
+[profile.dev]
+strip = "symbols"
+codegen-units = 1
+opt-level = "s"
